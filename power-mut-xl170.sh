@@ -16,7 +16,8 @@ MUTILATE_AGENT_CORE_RANGE="0-9"
 MUTILATE_AGENT_CLIENTS=8
 MUTILATE_TEST_DURATION=60
 # MUTILATE_TEST_DURATION=10
-MUTILATE_IADIST="fb_ia"
+# Use exponential inter-arrival times for Poisson arrivals (vs fb_ia Pareto bursty load)
+MUTILATE_IADIST="exponential"
 
 MUTILATE_AGENT_1_ALIAS="10.10.0.2"
 MUTILATE_AGENT_2_ALIAS="10.10.0.3"
@@ -25,10 +26,6 @@ MUTILATE_AGENT_3_ALIAS="localhost"
 MUTILATE_MASTER_THREADS=4
 MUTILATE_MASTER_CLIENTS=4
 MUTILATE_MASTER_QPS=1000
-
-# QPS_START=100000
-# QPS_END=8000000
-# QPS_STEP=500000
 
 
 QPS_LIST=(
@@ -131,7 +128,6 @@ sleep $SYNC_DELAY
 
 echo "$SEPARATOR"
 echo "[*] Starting QPS loop on server..."
-# for ((QPS=QPS_START; QPS<=QPS_END; QPS+=QPS_STEP)); do
 for QPS in "${QPS_LIST[@]}"; do
     echo "[*] Starting mutilate agents on clients..."
     ssh_with_retry $CLIENT1_ALIAS <<EOF
@@ -149,7 +145,7 @@ EOF
     ssh_with_retry $CLIENT3_ALIAS <<EOF
         cd ~/mutilate
         sudo pkill mutilate || true
-        nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -A > /dev/null 2>&1 &
+        nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -A -i $MUTILATE_IADIST > /dev/null 2>&1 &
 EOF
     
     echo "$SEPARATOR"
@@ -163,7 +159,7 @@ EOF
     sleep $SYNC_DELAY
 
     echo "$SEPARATOR"
-    echo "[*] Starting mutilate master on server..."
+    echo "[*] Starting mutilate master on master client..."
     ssh_with_retry $CLIENT3_ALIAS <<EOF
         mkdir -p ~/mutilate/logs_$DATE_TAG
         cd ~/mutilate

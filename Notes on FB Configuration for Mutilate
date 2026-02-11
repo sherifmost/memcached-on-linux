@@ -1,0 +1,114 @@
+To recreate the Facebook "ETC" request stream from [1], the following hard-coded distributions are also provided:
+
+    fb_value   = a hard-coded discrete and GPareto PDF of value sizes
+    fb_key     = "gev:30.7984,8.20449,0.078688", key-size distribution
+    fb_ia      = "pareto:0.0,16.0292,0.154971", inter-arrival time dist.
+
+    20 memcached threads to match the number of cores
+    50k connections on Memcached to prevent connection-limit from becoming the bottleneck when cranking up -c on the clients
+    Choose a realistic item-size limit to match the workload (FB traces can have large values)
+
+    Start with this agent preset (run on each of the 3 clients): -T 12, -c 64, -d 8; so per-client we have: 
+        - 12 x 64 = 768 total connections, i.e., 2304 total connections across the 3 clients
+        - 768 x 8 = 6144 outstanding requests, i.e., 18432 outstanding across the 3 clients
+
+    To run the agents: mutilate -A -T 12 -c 64 -d 8
+    
+    Master preset: 
+    mutilate -s <server_ip>:11211 --noload \
+    -a <client1_ip> -a <client2_ip> -a <client3_ip> \
+    -C 64 -D 8 -Q <target_qps> \
+    -K fb_key -V fb_value -i fb_ia \
+    -u 0.0333 \
+    -w 30 -t 120
+
+3) If you still can’t saturate the server: scale in this order
+Step A — Increase pipelining (cheapest)
+
+Move -d from 8 → 16 first:
+
+Agents:
+
+mutilate -A -T 12 -c 64 -d 16
+
+
+Master: -D 16
+
+Step B — Increase connections (next best)
+
+Increase -c from 64 → 96 or 128:
+
+Agents:
+
+mutilate -A -T 12 -c 96 -d 8
+
+
+(or -c 128 if needed)
+
+Step C — Increase threads (last)
+
+Only if clients are underutilized and you need more parallelism:
+
+-T 12 → 16 (rarely need 20)
+
+Too many threads can add context-switch overhead without helping.
+
+4) OS limits you MUST raise on clients (common hidden bottleneck)
+
+On each client before running agents:
+
+ulimit -n 200000
+
+
+Also helpful (optional) if you push huge connection counts:
+
+widen ephemeral port range
+
+reduce TIME_WAIT pressure
+
+5) How to verify “server is bottleneck, not client” (quick checks)
+
+While running a high-QPS test:
+
+On each client
+
+CPU should be comfortably below max (ideally <70–80% total).
+
+NIC should not be pegged (unless you’re truly network-limited).
+
+If a client hits 100% CPU or NIC saturation, it’s your bottleneck → reduce -T overhead (not increase), and prefer -c/-d.
+
+On server
+
+memcached threads should be busy (high CPU across cores).
+
+latency curve should start rising as you increase QPS.
+
+6) Two “profiles” depending on your goal
+A) Throughput / power saturation (what you asked for)
+
+Use higher inflight:
+
+-T 12, -c 96, -d 16 (very strong saturation preset)
+
+B) Tail-latency fidelity (more realistic p99)
+
+Reduce pipeline:
+
+-T 12, -c 64, -d 4
+
+My recommended starting config for your setup
+
+Start with this (almost always saturates a 20-core memcached server unless you’re network-limited):
+
+Agents (each of 3 clients): -T 12 -c 64 -d 8
+
+Memcached: -t 20 -c 50000
+
+Raise ulimit -n on clients.
+
+Other issues in the original script:
+- Should run the master in open-loop not closed loop
+- The interarrival distribution time doesn't seem to be set correctly (not all agents were sending in Poisson).
+- The master was running closed-loop
+- The kv sizes and their distributions were not set correctly
