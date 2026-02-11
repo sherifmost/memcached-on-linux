@@ -9,16 +9,3 @@ unzip mutilate.zip
 cd mutilate
 scons -c
 scons
-
------------
-scp mutilate.zip client3c220g1:~
-
-
-    echo off | sudo tee /sys/devices/system/cpu/smt/control
-
-for cpu in {8..15} {24..31}; do
-    echo 0 | sudo tee /sys/devices/system/cpu/cpu$cpu/online
-done
-
-
-echo "1" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
