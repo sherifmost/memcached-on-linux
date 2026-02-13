@@ -2,46 +2,35 @@
 """
 Set or reset CPU frequency on remote servers via SSH.
 
-Usage:
-  python3 run/set_cpu_freq.py --server-idxs 0,1,2 --mode set --freq-khz 2200000
-  python3 run/set_cpu_freq.py --server-idxs 0,1,2 --mode reset
+Examples:
+  # Set to 3.4 GHz with performance governor on two hosts
+  python3 set_cpu_freq.py --hosts server_mem,client_mem1 --mode set --freq-khz 3400000 --set-governor performance
+
+  # Reset to default min/max and schedutil governor
+  python3 set_cpu_freq.py --hosts server_mem --mode reset --reset-governor schedutil
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
-
-import paramiko
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-import setup.config_remote as cfg
-from setup.util import execute_remote
+import getpass
+import subprocess
 
 
-def ssh_host(idx: int) -> str:
-    return f"{cfg.USERNAME}@{cfg.NODES[idx]}"
-
-
-def run_cmd(host: str, cmd: str, key_path: str | None) -> None:
-    if "@" in host:
-        ssh_user, ssh_host = host.split("@", 1)
-    else:
-        ssh_user, ssh_host = cfg.USERNAME, host
-    conn = paramiko.SSHClient()
-    conn.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    conn.connect(hostname=ssh_host, username=ssh_user, key_filename=key_path or cfg.KEY_LOCATION)
-    execute_remote([conn], cmd, True, False)
-    conn.close()
+def run_cmd(host: str, cmd: str, key_path: str | None, user: str) -> None:
+    target = f"{user}@{host}" if "@" not in host else host
+    ssh_cmd = ["ssh"]
+    if key_path:
+        ssh_cmd += ["-i", key_path]
+    ssh_cmd += [target, cmd]
+    subprocess.run(ssh_cmd, check=True)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Set/reset CPU frequency on remote servers.")
-    ap.add_argument("--server-idxs", required=True, help="Comma-separated indices into config_remote.NODES.")
-    ap.add_argument("--ssh-key", default=cfg.KEY_LOCATION, help="Path to SSH private key.")
+    ap = argparse.ArgumentParser(description="Set/reset CPU frequency on remote servers via SSH.")
+    ap.add_argument("--hosts", required=True, help="Comma-separated hostnames/aliases to target.")
+    ap.add_argument("--ssh-key", default=None, help="Path to SSH private key.")
+    ap.add_argument("--user", default=getpass.getuser(), help="SSH username (default: current user).")
     ap.add_argument("--mode", choices=("set", "reset"), required=True, help="Set fixed frequency or reset to defaults.")
     ap.add_argument("--freq-khz", type=int, default=2200000, help="Fixed frequency in kHz for --mode set.")
     ap.add_argument("--set-governor", default="performance",
@@ -50,9 +39,9 @@ def main() -> None:
                     help="Governor to use when resetting (default: schedutil).")
     args = ap.parse_args()
 
-    server_indices = [int(x) for x in args.server_idxs.split(",") if x.strip() != ""]
-    if not server_indices:
-        raise SystemExit("No servers specified.")
+    hosts = [h.strip() for h in args.hosts.split(",") if h.strip()]
+    if not hosts:
+        raise SystemExit("No hosts specified.")
 
     if args.mode == "set":
         cmd = (
@@ -69,10 +58,9 @@ def main() -> None:
             "tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq'"
         )
 
-    for idx in server_indices:
-        host = ssh_host(idx)
+    for host in hosts:
         print(f"[*] {args.mode} CPU frequency on {host}")
-        run_cmd(host, cmd, args.ssh_key)
+        run_cmd(host, cmd, args.ssh_key, args.user)
 
 
 if __name__ == "__main__":

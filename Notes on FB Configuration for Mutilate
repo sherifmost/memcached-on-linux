@@ -112,3 +112,54 @@ Other issues in the original script:
 - The interarrival distribution time doesn't seem to be set correctly (not all agents were sending in Poisson).
 - The master was running closed-loop
 - The kv sizes and their distributions were not set correctly
+- Agents run in closed-loop so maybe using a master per client machine would provide better results?
+    + No it won't have an effect as the bulk load runs in closed-loop
+    + Net: with closed‑loop main load, tail latency can be under-reported near saturation because the client self-throttles. To see “real” latency under sustained high offered load, you need an open‑loop workload generator (or patches to mutilate) that doesn’t back off as latency increases.
+- A wierd thing is that the client cores reach 100% while the server can still push for more QPS, how are the clients not a bottleneck??
+    + How can we wtill push the QPS and the server CPU util while the client CPU is at max?
+    + Also, latency spikes greatly after 80% utilization so the results there don't make much sense => Is this normal? Mutilate reports the average latency not the median so it might be noise from the results. => THERE IS A WAY TO DO IT, MAKE THAT A NEXT STEP
+
+------------
+
+Clean-up in case of early stopping of the script:
+ssh client_mem1 "sudo pkill mutilate || true"
+ssh client_mem2 "sudo pkill mutilate || true"
+ssh client_mem3 "sudo pkill mutilate || true"
+ssh server_mem  "sudo pkill memcached || true; sudo pkill powerstat || true"
+pkill -f "ssh -fN server_mem"
+pkill -f "ssh -fN client_mem1"
+pkill -f "ssh -fN client_mem2"
+pkill -f "ssh -fN client_mem3"
+ssh server_mem "sudo systemctl stop memcached || true"
+
+from server_mem run:
+# 1) Stop the systemd service so it stops auto-respawning
+sudo systemctl stop memcached || true
+sudo systemctl disable memcached || true
+sudo systemctl reset-failed memcached || true
+
+# 2) Kill any remaining memcached or powerstat processes
+sudo pkill memcached || true
+sudo pkill powerstat || true
+
+# 3) Verify nothing is left
+pgrep -af memcached || true
+pgrep -af powerstat || true
+
+
+Then on each client:
+sudo pkill mutilate || true
+pgrep -af mutilate || true   # should show nothing
+
+
+Then on the local machine:
+pkill -f "ssh -fN server_mem"
+pkill -f "ssh -fN client_mem1"
+pkill -f "ssh -fN client_mem2"
+pkill -f "ssh -fN client_mem3"
+
+Disable systemctl entirely on the server to avoid issues with it re-loading memcached etc.: sudo systemctl mask memcached
+
+NEXT STEPS:
+- Make the script obtain the median not just the average latency by logging the whole latencies and calculating the median
+- Look into why/how are the client machines capped to 100% CPU while we still can push QPS to higher values

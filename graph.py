@@ -39,19 +39,48 @@ def read_and_clean_csv(filename):
     return df
 
 
-def plot_power_vs_target(datasets, title, fname):
+def _filter_by_latency(df, cap_ms):
+    if cap_ms is None:
+        return df
+    # Prefer P99_Latency if present, else Avg_Latency
+    lat_col = None
+    for c in ("P99_Latency", "Avg_Latency", "latency", "Latency"):
+        if c in df.columns:
+            lat_col = c
+            break
+    if lat_col is None:
+        return df
+    cap_us = cap_ms * 1000.0
+    return df[df[lat_col] <= cap_us]
+
+
+def plot_power_vs_target(datasets, title, fname, latency_cap=None, linear_ref=False):
     plt.figure(figsize=PLOT_SIZE)
+    ref_done = False
+    ref_points = []
     for ds in datasets:
-        x_col = _pick_column(ds['df'], 'Rate', 'QPS', 'target', context='power vs target (x)')
-        y_col = _pick_column(ds['df'], 'Power', 'power', context='power vs target (y)')
+        df = _filter_by_latency(ds['df'], latency_cap)
+        if df.empty:
+            continue
+        x_col = _pick_column(df, 'Rate', 'QPS', 'target', context='power vs target (x)')
+        y_col = _pick_column(df, 'Power', 'power', context='power vs target (y)')
         plt.scatter(
-            ds['df'][x_col],
-            ds['df'][y_col],
+            df[x_col],
+            df[y_col],
             label=ds['label'],
             marker=ds['marker'],
             s=10,
             color=ds['color'],
         )
+        if linear_ref and not ref_done and not df.empty:
+            df_sorted = df.sort_values(by=x_col)
+            x_max = df_sorted.iloc[-1][x_col]
+            y_max = df_sorted.iloc[-1][y_col]
+            x_ref = [0, x_max]
+            y_ref = [0, y_max]
+            plt.plot(x_ref, y_ref, linestyle='--', color='grey', label='Linear ref')
+            ref_done = True
+            ref_points.append((x_ref, y_ref))
     plt.xlabel('Target Rate')
     plt.ylabel('Power (W)')
     plt.title(title)
@@ -67,11 +96,12 @@ def plot_util_vs_ops_latency(datasets, title, fname):
 
     ax = plt.gca()
     for ds in datasets:
-        util_col = _pick_column(ds['df'], 'Util', 'util', context='util vs ops/latency (util)')
-        ops_col = _pick_column(ds['df'], 'QPS', 'Ops', 'ops', context='util vs ops/latency (ops)')
+        df = ds['df']
+        util_col = _pick_column(df, 'Util', 'util', context='util vs ops/latency (util)')
+        ops_col = _pick_column(df, 'QPS', 'Ops', 'ops', context='util vs ops/latency (ops)')
         ax.scatter(
-            ds['df'][util_col],
-            ds['df'][ops_col],
+            df[util_col],
+            df[ops_col],
             label=f"{ds['label']} Ops/sec",
             marker=ds['marker'],
             s=10,
@@ -84,11 +114,13 @@ def plot_util_vs_ops_latency(datasets, title, fname):
 
     ax_right = ax.twinx()
     for ds in datasets:
-        util_col = _pick_column(ds['df'], 'Util', 'util', context='util vs ops/latency (util)')
-        lat_col = _pick_column(ds['df'], 'P99_Latency', 'latency', 'Latency', context='util vs ops/latency (latency)')
+        df = ds['df']
+        util_col = _pick_column(df, 'Util', 'util', context='util vs ops/latency (util)')
+        lat_col = _pick_column(df, 'P99_Latency', 'latency', 'Latency', context='util vs ops/latency (latency)')
+        lat_ms = df[lat_col] / 1000.0  # mutilate reports µs
         ax_right.scatter(
-            ds['df'][util_col],
-            ds['df'][lat_col],
+            df[util_col],
+            lat_ms,
             label=f"{ds['label']} P99 Latency",
             marker=ds['lat_marker'],
             s=7,
@@ -108,11 +140,12 @@ def plot_util_vs_ops_latency(datasets, title, fname):
 def plot_power_vs_utilization(datasets, title, fname):
     plt.figure(figsize=PLOT_SIZE)
     for ds in datasets:
-        x_col = _pick_column(ds['df'], 'Util', 'util', context='power vs util (x)')
-        y_col = _pick_column(ds['df'], 'Power', 'power', context='power vs util (y)')
+        df = ds['df']
+        x_col = _pick_column(df, 'Util', 'util', context='power vs util (x)')
+        y_col = _pick_column(df, 'Power', 'power', context='power vs util (y)')
         plt.scatter(
-            ds['df'][x_col],
-            ds['df'][y_col],
+            df[x_col],
+            df[y_col],
             label=ds['label'],
             marker=ds['marker'],
             s=10,
@@ -128,6 +161,83 @@ def plot_power_vs_utilization(datasets, title, fname):
     plt.close()
 
 
+def plot_target_vs_actual_qps(datasets, title, fname):
+    plt.figure(figsize=PLOT_SIZE)
+    for ds in datasets:
+        df = ds['df']
+        target_col = _pick_column(df, 'Rate', 'QPS', 'target', context='target vs actual (target)')
+        actual_col = _pick_column(df, 'QPS', 'Ops', 'ops', context='target vs actual (actual)')
+        plt.scatter(
+            df[target_col],
+            df[actual_col],
+            label=ds['label'],
+            marker=ds['marker'],
+            s=10,
+            color=ds['color'],
+        )
+    # reference y=x line
+    all_targets = pd.concat([ds['df'][_pick_column(ds['df'], 'Rate', 'QPS', 'target', context='agg')] for ds in datasets])
+    if not all_targets.empty:
+        t_min, t_max = all_targets.min(), all_targets.max()
+        plt.plot([t_min, t_max], [t_min, t_max], linestyle='--', color='grey', label='Ideal y=x')
+    plt.xlabel('Target QPS')
+    plt.ylabel('Actual QPS')
+    plt.title(title)
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(fname, dpi=1000)
+    plt.close()
+
+
+def plot_power_and_latency_vs_qps(datasets, title, fname, latency_cap=None):
+    plt.figure(figsize=PLOT_SIZE)
+    ax_left = plt.gca()
+    ax_right = ax_left.twinx()
+    ref_plotted = False
+    ref_points = []
+
+    for ds in datasets:
+        df = ds['df']
+        qps_col = _pick_column(df, 'QPS', 'Rate', 'target', context='power/latency vs qps (x)')
+        power_col = _pick_column(df, 'Power', 'power', context='power/latency vs qps (power)')
+        lat_col = _pick_column(df, 'P99_Latency', 'Latency', 'latency', 'p99', context='power/latency vs qps (latency)')
+
+        if latency_cap is not None:
+            df = df[df[lat_col] <= latency_cap * 1000]  # cap provided in ms, data in µs
+        lat_ms = df[lat_col] / 1000.0  # convert µs -> ms
+        ax_left.plot(df[qps_col], df[power_col], marker=ds['marker'], color=ds['color'],
+                     label=f"{ds['label']} Power", linestyle='-')
+        ax_right.plot(df[qps_col], lat_ms, marker=ds['lat_marker'], color=ds['color'],
+                      label=f"{ds['label']} P99 Latency", linestyle='--')
+        if not ref_plotted and not df.empty:
+            df_sorted = df.sort_values(by=qps_col)
+            x_max = df_sorted.iloc[-1][qps_col]
+            y_max = df_sorted.iloc[-1][power_col]
+            ref_points.append(([0, x_max], [0, y_max]))
+            ref_plotted = True
+
+    ax_left.set_xlabel('QPS')
+    ax_left.set_ylabel('Power (W)')
+    ax_right.set_ylabel('Avg Latency (ms)')
+    ax_left.set_title(title)
+
+    # linear reference
+    if ref_points:
+        x_ref, y_ref = ref_points[0]
+        ax_left.plot(x_ref, y_ref, linestyle='--', color='grey', label='Linear ref')
+
+    # combine legends
+    h1, l1 = ax_left.get_legend_handles_labels()
+    h2, l2 = ax_right.get_legend_handles_labels()
+    ax_left.legend(h1 + h2, l1 + l2, loc='upper left')
+    ax_left.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(fname, dpi=1000)
+    plt.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Plot memcached-mutilate experiment graphs from CSV files. Provide 1 or more CSVs for overlay comparison.'
@@ -137,6 +247,8 @@ def main():
     parser.add_argument('--title', default=None, help='Plot title prefix (defaults to CSV stem(s))')
     parser.add_argument('--outdir', default='.', help='Output directory for PNGs')
     parser.add_argument('--prefix', default=None, help='Filename prefix for PNGs (defaults to CSV stem(s))')
+    parser.add_argument('--latency-cap', type=float, default=None,
+                        help='Maximum P99 latency (ms); points above are dropped from all plots.')
     args = parser.parse_args()
 
     if len(args.csv) < 1:
@@ -172,9 +284,11 @@ def main():
 
     datasets = []
     for i, csv_path in enumerate(csv_paths):
+        df_raw = read_and_clean_csv(str(csv_path))
+        df_filtered = _filter_by_latency(df_raw, args.latency_cap)
         datasets.append(
             {
-                'df': read_and_clean_csv(str(csv_path)),
+                'df': df_filtered,
                 'label': labels[i],
                 'color': colors[i],
                 'marker': markers[i],
@@ -186,6 +300,8 @@ def main():
         datasets,
         title=f'{title_prefix}: Power vs Target Rate',
         fname=str(outdir / f'{prefix}-power-vs-target.png'),
+        latency_cap=args.latency_cap,
+        linear_ref=True,
     )
     plot_util_vs_ops_latency(
         datasets,
@@ -196,6 +312,17 @@ def main():
         datasets,
         title=f'{title_prefix}: Power vs Utilization',
         fname=str(outdir / f'{prefix}-power-vs-util.png'),
+    )
+    plot_power_and_latency_vs_qps(
+        datasets,
+        title=f'{title_prefix}: Power & Avg Latency vs QPS',
+        fname=str(outdir / f'{prefix}-power-latency-vs-qps.png'),
+        latency_cap=args.latency_cap,
+    )
+    plot_target_vs_actual_qps(
+        datasets,
+        title=f'{title_prefix}: Target vs Actual QPS',
+        fname=str(outdir / f'{prefix}-target-vs-actual-qps.png'),
     )
 
 

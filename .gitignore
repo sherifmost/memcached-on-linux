@@ -1,0 +1,8 @@
+# Ignore experiment outputs
+experiment_logs_xl170/
+scan_logs_xl170/
+*_logs*/
+
+# Generated CSV aggregates
+# *.csv
+

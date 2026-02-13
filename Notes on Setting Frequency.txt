@@ -1,0 +1,21 @@
+Determine the current frequency by: 
+  for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_min_freq; do echo "$f: $(cat $f)"; done
+  for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq; do echo "$f: $(cat $f)"; done
+  for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do echo "$f: $(cat $f)"; done
+  for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo "$f: $(cat $f)"; done
+
+Set it to performance:
+# 1) Install cpupower if missing
+sudo apt-get update
+sudo apt-get install -y linux-tools-common linux-tools-$(uname -r)
+
+# 2) If the driver isn’t loaded, load a generic one (Intel boxes usually use acpi_cpufreq when intel_pstate is unavailable)
+sudo modprobe acpi_cpufreq  # if this errors, check dmesg; intel_pstate may already be built-in
+
+# 3) Set governor and min/max to 3.4 GHz
+sudo cpupower frequency-set -g performance
+sudo cpupower frequency-set -u 3.4GHz -d 3.4GHz
+
+Set back to schedutil:
+sudo cpupower frequency-set -g schedutil
+sudo cpupower frequency-set -d 1.2GHz -u 3.4GHz
