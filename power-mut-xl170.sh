@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # === Configuration selection ===
-PROFILE="${1:-ETC}"   # ETC (default) or USR
-GOV_LABEL="${2:-performance}"  # frequency governor label
+PROFILE="${1:-ETC}"          # ETC (default) or USR
+GOV_LABEL="${2:-performance}" # frequency governor label
+ENGINE="${3:-MEMCACHED}"      # MEMCACHED (default) or REDIS
 
 # Common host settings
 SERVER_ALIAS="server_mem"
@@ -16,6 +17,27 @@ MEMCACHED_THREADS=20
 MEMCACHED_CORE_RANGE="0-19"
 MEMCACHED_MAX_CONNECTIONS=50000
 
+# Redis settings (used when ENGINE=REDIS)
+REDIS_IP="10.10.1.1"
+REDIS_PORT=6379
+REDIS_CORE_RANGE="0-19"
+REDIS_MAXMEM="0"               # 0 = unlimited; set e.g., 64gb for cache-like
+REDIS_MAXMEM_POLICY="noeviction"
+REDIS_IO_THREADS=4
+REDIS_IO_THREADS_DO_READS="yes"
+
+MEMTIER_THREADS=8
+MEMTIER_CLIENTS=50
+MEMTIER_PIPELINE=32
+MEMTIER_RATIO="1:9"      # set:get; adjust per workload
+MEMTIER_CORE_RANGE="12-15"
+MEMTIER_KEY_MAX=5000000
+MEMTIER_KEY_PATTERN="R:R"
+MEMTIER_ZIPF_EXP="1.2"
+MEMTIER_DATA_SIZE=2
+MEMTIER_DATA_SIZE_LIST=""
+MEMTIER_DATA_SIZE_LIST_ETC="1:583,2:17820,3:9239,4:18,5:2740,6:65,7:606,8:23,9:837,10:837,11:8989,12:92,13:326,14:1980,22:4200,45:6821,91:10397,181:12790,362:11421,724:6768,1448:2598,2896:683,5793:136,11585:23,23170:3,46341:1,92682:1,185364:1,370728:1,741455:1"
+
 # Agent side (3 hosts) - overridden per profile if needed
 MUTILATE_AGENT_THREADS=15
 MUTILATE_AGENT_CORE_RANGE="0-14"   # leave upper cores free for master
@@ -28,19 +50,29 @@ MUTILATE_VALUESIZE="fb_value"
 MUTILATE_UPDATE_RATIO=0.0333       # ETC default
 DO_LOADONLY=true
 LOAD_THREADS=4
-DO_LOADONLY=true
-LOAD_THREADS=4
 
 # Profile-specific tweaks
 case "$PROFILE" in
   ETC)
     # Facebook ETC: read-heavy, Poisson arrivals (already set)
+    MEMTIER_RATIO="1:30"
+    MEMTIER_KEY_PATTERN="Z:Z"
+    MEMTIER_DATA_SIZE_LIST="$MEMTIER_DATA_SIZE_LIST_ETC"
+    REDIS_MAXMEM="0"
+    REDIS_MAXMEM_POLICY="noeviction"
     ;;
   USR)
     # USR-like: fixed key/value sizes, low write ratio
     MUTILATE_KEYSIZE="fixed:21"
     MUTILATE_VALUESIZE="fixed:2"
     MUTILATE_UPDATE_RATIO=0.002   # or raise to 0.018 if you want more misses
+    MUTILATE_IADIST="fb_ia"
+    MEMTIER_RATIO="1:500"
+    MEMTIER_KEY_PATTERN="R:R"
+    MEMTIER_DATA_SIZE=2
+    MEMTIER_DATA_SIZE_LIST=""
+    REDIS_MAXMEM="0"
+    REDIS_MAXMEM_POLICY="noeviction"
     ;;
   *)
     echo "[!!] Unknown profile '$PROFILE' (use ETC or USR)"
@@ -115,7 +147,8 @@ ssh -fN "$CLIENT2_ALIAS"
 ssh -fN "$CLIENT3_ALIAS"
 
 echo "$SEPARATOR"
-echo "[*] Starting memcached and powerstat on server..."
+  echo "[*] Starting server process and powerstat on server..."
+  if [ "$ENGINE" = "MEMCACHED" ]; then
 ssh_with_retry "$SERVER_ALIAS" <<EOF
   set -e
   mkdir -p logs_$DATE_TAG
@@ -146,6 +179,23 @@ ssh_with_retry "$SERVER_ALIAS" <<EOF
     exit 1
   fi
 EOF
+else
+ssh_with_retry "$SERVER_ALIAS" <<EOF
+  set -e
+  mkdir -p logs_$DATE_TAG
+  cd logs_$DATE_TAG
+  sudo -n pkill redis-server || true
+  sleep 2
+  nohup taskset -c $REDIS_CORE_RANGE redis-server \\
+    --bind $REDIS_IP --port $REDIS_PORT \\
+    --save '' --appendonly no \\
+    --maxmemory $REDIS_MAXMEM --maxmemory-policy $REDIS_MAXMEM_POLICY \\
+    --io-threads $REDIS_IO_THREADS --io-threads-do-reads $REDIS_IO_THREADS_DO_READS \\
+    > redis_server.log 2>&1 &
+  sleep 2
+  netstat -tuln | grep $REDIS_PORT || { echo "[!!] Redis failed to start"; exit 1; }
+EOF
+fi
 
 echo "$SEPARATOR"
 echo "[*] Sleeping for warm-up and sync (${SYNC_DELAY}s)..."
@@ -154,54 +204,82 @@ sleep "$SYNC_DELAY"
 # Optional preload to avoid cold cache
 if $DO_LOADONLY; then
   echo "$SEPARATOR"
-  echo "[*] Loading dataset (one-time) from master..."
-  ssh_with_retry "$CLIENT3_ALIAS" <<EOF
-    set -e
-    cd ~/mutilate
-    taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
-      -s $MEMCACHED_IP \
-      -T $LOAD_THREADS \
-      --loadonly \
-      -K $MUTILATE_KEYSIZE \
-      -V $MUTILATE_VALUESIZE \
-      -u $MUTILATE_UPDATE_RATIO \
-      --iadist $MUTILATE_IADIST \
-      > ~/mutilate/logs_$DATE_TAG/mutilate_load.log 2>&1
+  if [ "$ENGINE" = "MEMCACHED" ]; then
+    echo "[*] Loading dataset (one-time) from master..."
+    ssh_with_retry "$CLIENT3_ALIAS" <<EOF
+      set -e
+      cd ~/mutilate
+      taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
+        -s $MEMCACHED_IP \
+        -T $LOAD_THREADS \
+        --loadonly \
+        -K $MUTILATE_KEYSIZE \
+        -V $MUTILATE_VALUESIZE \
+        -u $MUTILATE_UPDATE_RATIO \
+        --iadist $MUTILATE_IADIST \
+        > ~/mutilate/logs_$DATE_TAG/mutilate_load.log 2>&1
 EOF
+  else
+    echo "[*] Preloading Redis dataset from all clients..."
+    HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
+    PREFIXES=("c1:" "c2:" "c3:")
+    for idx in 0 1 2; do
+      h="${HOSTS[$idx]}"; p="${PREFIXES[$idx]}"
+ssh_with_retry "$h" <<EOF &
+        set -e
+        mkdir -p ~/memtier/logs_$DATE_TAG
+        cd ~/memtier
+        memtier_benchmark \
+          --server=$REDIS_IP --port=$REDIS_PORT --protocol=redis \
+          --threads=$MEMTIER_THREADS --clients=$MEMTIER_CLIENTS \
+          --ratio=1:0 \
+          --key-maximum=$MEMTIER_KEY_MAX \
+          --key-pattern=S:S \
+          --key-prefix="$p" \
+          --requests=allkeys \
+          $( [ -n "$MEMTIER_DATA_SIZE_LIST" ] && echo "--data-size-list=$MEMTIER_DATA_SIZE_LIST" || echo "--data-size=$MEMTIER_DATA_SIZE" ) \
+          --hide-histogram \
+          > logs_$DATE_TAG/memtier_preload_${PROFILE}_${idx}.log 2>&1
+EOF
+    done
+    wait
+  fi
   DO_LOADONLY=false
 fi
 
 echo "$SEPARATOR"
 echo "[*] Starting QPS loop on server..."
 for QPS in "${QPS_LIST[@]}"; do
-  echo "$SEPARATOR"
-  echo "[*] Starting mutilate agents on clients..."
-  ssh_with_retry "$CLIENT1_ALIAS" <<EOF
-    cd ~/mutilate
-    ulimit -n 200000
-    sudo -n pkill mutilate || true
-    nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -c $MUTILATE_AGENT_CLIENTS -d $MUTILATE_AGENT_DEPTH -A -i $MUTILATE_IADIST > ~/agent1.log 2>&1 </dev/null &
-    sleep 2
-    pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client1"; exit 1; }
+  if [ "$ENGINE" = "MEMCACHED" ]; then
+    echo "$SEPARATOR"
+    echo "[*] Starting mutilate agents on clients..."
+    ssh_with_retry "$CLIENT1_ALIAS" <<EOF
+      cd ~/mutilate
+      ulimit -n 200000
+      sudo -n pkill mutilate || true
+      nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -c $MUTILATE_AGENT_CLIENTS -d $MUTILATE_AGENT_DEPTH -A -i $MUTILATE_IADIST > ~/agent1.log 2>&1 </dev/null &
+      sleep 2
+      pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client1"; exit 1; }
 EOF
 
-  ssh_with_retry "$CLIENT2_ALIAS" <<EOF
-    cd ~/mutilate
-    ulimit -n 200000
-    sudo -n pkill mutilate || true
-    nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -c $MUTILATE_AGENT_CLIENTS -d $MUTILATE_AGENT_DEPTH -A -i $MUTILATE_IADIST > ~/agent2.log 2>&1 </dev/null &
-    sleep 2
-    pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client2"; exit 1; }
+    ssh_with_retry "$CLIENT2_ALIAS" <<EOF
+      cd ~/mutilate
+      ulimit -n 200000
+      sudo -n pkill mutilate || true
+      nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -c $MUTILATE_AGENT_CLIENTS -d $MUTILATE_AGENT_DEPTH -A -i $MUTILATE_IADIST > ~/agent2.log 2>&1 </dev/null &
+      sleep 2
+      pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client2"; exit 1; }
 EOF
 
-  ssh_with_retry "$CLIENT3_ALIAS" <<EOF
-    cd ~/mutilate
-    ulimit -n 200000
-    sudo -n pkill mutilate || true
-    nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -c $MUTILATE_AGENT_CLIENTS -d $MUTILATE_AGENT_DEPTH -A -i $MUTILATE_IADIST > ~/agent3.log 2>&1 </dev/null &
-    sleep 2
-    pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client3"; exit 1; }
+    ssh_with_retry "$CLIENT3_ALIAS" <<EOF
+      cd ~/mutilate
+      ulimit -n 200000
+      sudo -n pkill mutilate || true
+      nohup taskset -c $MUTILATE_AGENT_CORE_RANGE ./mutilate -T $MUTILATE_AGENT_THREADS -c $MUTILATE_AGENT_CLIENTS -d $MUTILATE_AGENT_DEPTH -A -i $MUTILATE_IADIST > ~/agent3.log 2>&1 </dev/null &
+      sleep 2
+      pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client3"; exit 1; }
 EOF
+  fi
 
   echo "$SEPARATOR"
   echo "[*] QPS: $QPS"
@@ -214,29 +292,67 @@ EOF
   echo "[*] Sleeping for warm-up and sync (${SYNC_DELAY}s)..."
   sleep "$SYNC_DELAY"
 
-  echo "$SEPARATOR"
-  echo "[*] Starting mutilate master on master client..."
-  ssh_with_retry "$CLIENT3_ALIAS" <<EOF
-    set -e
-    mkdir -p ~/mutilate/logs_$DATE_TAG
-    cd ~/mutilate
-    timeout $((MUTILATE_TEST_DURATION + 10)) taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
-      -s $MEMCACHED_IP \
-      -T $MUTILATE_MASTER_THREADS \
-      -C $MUTILATE_MASTER_CLIENTS \
-      -D $MUTILATE_MASTER_DEPTH \
-      -Q $MUTILATE_MASTER_QPS \
-      -a $MUTILATE_AGENT_1_ALIAS -a $MUTILATE_AGENT_2_ALIAS -a $MUTILATE_AGENT_3_ALIAS \
-      -c $MUTILATE_AGENT_CLIENTS \
-      -u $MUTILATE_UPDATE_RATIO \
-      -K $MUTILATE_KEYSIZE \
-      -V $MUTILATE_VALUESIZE \
-      -q $QPS \
-      -t $MUTILATE_TEST_DURATION \
-      $( $DO_LOADONLY && echo --noload ) \
-      --iadist $MUTILATE_IADIST \
-      > logs_$DATE_TAG/mutilate_master_qps_${QPS}.log 2>&1
+  if [ "$ENGINE" = "MEMCACHED" ]; then
+    echo "$SEPARATOR"
+    echo "[*] Starting mutilate master on master client..."
+    ssh_with_retry "$CLIENT3_ALIAS" <<EOF
+      set -e
+      mkdir -p ~/mutilate/logs_$DATE_TAG
+      cd ~/mutilate
+      timeout $((MUTILATE_TEST_DURATION + 10)) taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
+        -s $MEMCACHED_IP \
+        -T $MUTILATE_MASTER_THREADS \
+        -C $MUTILATE_MASTER_CLIENTS \
+        -D $MUTILATE_MASTER_DEPTH \
+        -Q $MUTILATE_MASTER_QPS \
+        -a $MUTILATE_AGENT_1_ALIAS -a $MUTILATE_AGENT_2_ALIAS -a $MUTILATE_AGENT_3_ALIAS \
+        -c $MUTILATE_AGENT_CLIENTS \
+        -u $MUTILATE_UPDATE_RATIO \
+        -K $MUTILATE_KEYSIZE \
+        -V $MUTILATE_VALUESIZE \
+        -q $QPS \
+        -t $MUTILATE_TEST_DURATION \
+        --noload \
+        --iadist $MUTILATE_IADIST \
+        > logs_$DATE_TAG/mutilate_master_qps_${QPS}.log 2>&1
 EOF
+  else
+    echo "$SEPARATOR"
+    echo "[*] Running memtier for Redis..."
+    HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
+    PREFIXES=("c1:" "c2:" "c3:")
+    NUM_HOSTS=3
+    TOTAL_CONNS=$((NUM_HOSTS * MEMTIER_THREADS * MEMTIER_CLIENTS))
+    PER_CONN_RATE=$(( (QPS + TOTAL_CONNS - 1) / TOTAL_CONNS ))
+
+    pids=()
+    for idx in 0 1 2; do
+      h="${HOSTS[$idx]}"; p="${PREFIXES[$idx]}"
+ssh_with_retry "$h" <<EOF &
+        set -e
+        mkdir -p ~/memtier/logs_$DATE_TAG
+        cd ~/memtier
+        memtier_benchmark \
+          --server=$REDIS_IP --port=$REDIS_PORT --protocol=redis \
+          --clients=$MEMTIER_CLIENTS --threads=$MEMTIER_THREADS \
+          --test-time=$MUTILATE_TEST_DURATION \
+          --ratio=$MEMTIER_RATIO \
+          --pipeline=$MEMTIER_PIPELINE \
+          --key-maximum=$MEMTIER_KEY_MAX \
+          --key-pattern=$MEMTIER_KEY_PATTERN \
+          --key-zipf-exp=$MEMTIER_ZIPF_EXP \
+          --key-prefix="$p" \
+          --distinct-client-seed \
+          --rate-limiting=$PER_CONN_RATE \
+          --hdr-file-prefix=logs_$DATE_TAG/memtier_${PROFILE}_qps_${QPS}_c${idx} \
+          --hide-histogram \
+          $( [ -n "$MEMTIER_DATA_SIZE_LIST" ] && echo "--data-size-list=$MEMTIER_DATA_SIZE_LIST" || echo "--data-size=$MEMTIER_DATA_SIZE" ) \
+          > logs_$DATE_TAG/memtier_${PROFILE}_qps_${QPS}_c${idx}.log 2>&1
+EOF
+      pids+=($!)
+    done
+    for pid in "${pids[@]}"; do wait "$pid"; done
+  fi
 done
 
 echo "$SEPARATOR"

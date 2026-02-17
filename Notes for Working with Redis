@@ -1,0 +1,3 @@
+Redis is single-threaded, how to deal with that?
+ - Have a separate Redis process each pinned to a core and do LB client-side RR on these replicas
+ - Discussing with Bhaskar: create shards of redis each with its own IO tread but each shard would have its own keyspace and each client would talk to a part of this keyspace
