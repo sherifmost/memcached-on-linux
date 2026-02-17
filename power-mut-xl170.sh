@@ -3,7 +3,7 @@
 # === Configuration selection ===
 PROFILE="${1:-ETC}"          # ETC (default) or USR
 GOV_LABEL="${2:-performance}" # frequency governor label
-ENGINE="${3:-MEMCACHED}"      # MEMCACHED (default) or REDIS
+ENGINE="${3:-MEMCACHED}"      # Possible Options: MEMCACHED (default), REDIS (single), REDIS_SHARDED
 
 # Common host settings
 SERVER_ALIAS="server_mem"
@@ -21,6 +21,9 @@ MEMCACHED_MAX_CONNECTIONS=50000
 REDIS_IP="10.10.1.1"
 REDIS_PORT=6379
 REDIS_CORE_RANGE="0-19"
+REDIS_SHARDS=20              # used when ENGINE=REDIS_SHARDED
+REDIS_PORT_BASE=7000
+REDIS_CORES_START=0          # shards will pin incrementally from here
 REDIS_MAXMEM="0"               # 0 = unlimited; set e.g., 64gb for cache-like
 REDIS_MAXMEM_POLICY="noeviction"
 REDIS_IO_THREADS=4
@@ -66,7 +69,7 @@ case "$PROFILE" in
     MUTILATE_KEYSIZE="fixed:21"
     MUTILATE_VALUESIZE="fixed:2"
     MUTILATE_UPDATE_RATIO=0.002   # or raise to 0.018 if you want more misses
-    MUTILATE_IADIST="fb_ia"
+    # MUTILATE_IADIST="fb_ia"
     MEMTIER_RATIO="1:500"
     MEMTIER_KEY_PATTERN="R:R"
     MEMTIER_DATA_SIZE=2
@@ -179,7 +182,7 @@ ssh_with_retry "$SERVER_ALIAS" <<EOF
     exit 1
   fi
 EOF
-else
+elif [ "$ENGINE" = "REDIS" ]; then
 ssh_with_retry "$SERVER_ALIAS" <<EOF
   set -e
   mkdir -p logs_$DATE_TAG
@@ -195,6 +198,32 @@ ssh_with_retry "$SERVER_ALIAS" <<EOF
   sleep 2
   netstat -tuln | grep $REDIS_PORT || { echo "[!!] Redis failed to start"; exit 1; }
 EOF
+elif [ "$ENGINE" = "REDIS_SHARDED"]; then
+  ssh_with_retry "$SERVER_ALIAS" <<EOF
+    set -e
+    mkdir -p logs_$DATE_TAG
+    cd logs_$DATE_TAG
+    sudo -n pkill redis-server || true
+    sleep 2
+EOF
+  shard=0
+  core=$REDIS_CORES_START
+  while [ \$shard -lt $REDIS_SHARDS ]; do
+    port=$((REDIS_PORT_BASE + shard))
+    ssh_with_retry "$SERVER_ALIAS" <<EOF
+      set -e
+      cd logs_$DATE_TAG
+      nohup taskset -c \$core redis-server \\
+        --bind $REDIS_IP --port \$port \\
+        --save '' --appendonly no \\
+        --maxmemory $REDIS_MAXMEM --maxmemory-policy $REDIS_MAXMEM_POLICY \\
+        --io-threads $REDIS_IO_THREADS --io-threads-do-reads $REDIS_IO_THREADS_DO_READS \\
+        > redis_shard_\$port.log 2>&1 &
+EOF
+    shard=$((shard + 1))
+    core=$((core + 1))
+  done
+fi
 fi
 
 echo "$SEPARATOR"
@@ -219,7 +248,7 @@ if $DO_LOADONLY; then
         --iadist $MUTILATE_IADIST \
         > ~/mutilate/logs_$DATE_TAG/mutilate_load.log 2>&1
 EOF
-  else
+  elif [ "$ENGINE" = "REDIS" ]; then
     echo "[*] Preloading Redis dataset from all clients..."
     HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
     PREFIXES=("c1:" "c2:" "c3:")
@@ -243,6 +272,34 @@ ssh_with_retry "$h" <<EOF &
 EOF
     done
     wait
+  elif [ "$ENGINE" = "REDIS_SHARDED"]; then
+    echo "[*] Preloading Redis shards across clients..."
+    HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
+    shard=0
+    pids=()
+    for port in $(seq $REDIS_PORT_BASE $((REDIS_PORT_BASE + REDIS_SHARDS - 1))); do
+      h=${HOSTS[$((shard % 3))]}
+      prefix="s${shard}:"
+ssh_with_retry "$h" <<EOF &
+        set -e
+        mkdir -p ~/memtier/logs_$DATE_TAG
+        cd ~/memtier
+        memtier_benchmark \
+          --server=$REDIS_IP --port=$port --protocol=redis \
+          --threads=$MEMTIER_THREADS --clients=$MEMTIER_CLIENTS \
+          --ratio=1:0 \
+          --key-maximum=$((MEMTIER_KEY_MAX / REDIS_SHARDS)) \
+          --key-pattern=S:S \
+          --key-prefix="$prefix" \
+          --requests=allkeys \
+          $( [ -n "$MEMTIER_DATA_SIZE_LIST" ] && echo "--data-size-list=$MEMTIER_DATA_SIZE_LIST" || echo "--data-size=$MEMTIER_DATA_SIZE" ) \
+          --hide-histogram \
+          > logs_$DATE_TAG/memtier_preload_${PROFILE}_shard${shard}.log 2>&1
+EOF
+      pids+=($!)
+      shard=$((shard + 1))
+    done
+    for pid in "${pids[@]}"; do wait "$pid"; done
   fi
   DO_LOADONLY=false
 fi
@@ -316,7 +373,7 @@ EOF
         --iadist $MUTILATE_IADIST \
         > logs_$DATE_TAG/mutilate_master_qps_${QPS}.log 2>&1
 EOF
-  else
+  elif [ "$ENGINE" = "REDIS" ]; then
     echo "$SEPARATOR"
     echo "[*] Running memtier for Redis..."
     HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
@@ -352,6 +409,44 @@ EOF
       pids+=($!)
     done
     for pid in "${pids[@]}"; do wait "$pid"; done
+  elif [ "$ENGINE" = "REDIS_SHARDED"]; then
+    echo "$SEPARATOR"
+    echo "[*] Running memtier for sharded Redis... (QPS total=$QPS)"
+    HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
+    pids=()
+    shard=0
+    for port in $(seq $REDIS_PORT_BASE $((REDIS_PORT_BASE + REDIS_SHARDS - 1))); do
+      h=${HOSTS[$((shard % 3))]}
+      prefix="s${shard}:"
+      # target per-shard QPS
+      qps_shard=$(( (QPS + REDIS_SHARDS - 1) / REDIS_SHARDS ))
+      total_conns=$((MEMTIER_THREADS * MEMTIER_CLIENTS))
+      per_conn_rate=$(( (qps_shard + total_conns - 1) / total_conns ))
+ssh_with_retry "$h" <<EOF &
+        set -e
+        mkdir -p ~/memtier/logs_$DATE_TAG
+        cd ~/memtier
+        memtier_benchmark \
+          --server=$REDIS_IP --port=$port --protocol=redis \
+          --clients=$MEMTIER_CLIENTS --threads=$MEMTIER_THREADS \
+          --test-time=$MUTILATE_TEST_DURATION \
+          --ratio=$MEMTIER_RATIO \
+          --pipeline=$MEMTIER_PIPELINE \
+          --key-maximum=$((MEMTIER_KEY_MAX / REDIS_SHARDS)) \
+          --key-pattern=$MEMTIER_KEY_PATTERN \
+          --key-zipf-exp=$MEMTIER_ZIPF_EXP \
+          --key-prefix="$prefix" \
+          --distinct-client-seed \
+          --rate-limiting=$per_conn_rate \
+          --hdr-file-prefix=logs_$DATE_TAG/memtier_${PROFILE}_qps_${QPS}_shard${shard} \
+          --hide-histogram \
+          $( [ -n "$MEMTIER_DATA_SIZE_LIST" ] && echo "--data-size-list=$MEMTIER_DATA_SIZE_LIST" || echo "--data-size=$MEMTIER_DATA_SIZE" ) \
+          > logs_$DATE_TAG/memtier_${PROFILE}_qps_${QPS}_shard${shard}.log 2>&1
+EOF
+      pids+=($!)
+      shard=$((shard + 1))
+    done
+    for pid in "${pids[@]}"; do wait "$pid"; done
   fi
 done
 
@@ -359,6 +454,9 @@ echo "$SEPARATOR"
 echo "[*] Copying logs from server to local directory..."
 scp_with_retry "$SERVER_ALIAS":logs_$DATE_TAG/powerstat_rate_*.txt "$LOG_DIR"/
 scp_with_retry "$CLIENT3_ALIAS":~/mutilate/logs_$DATE_TAG/mutilate_master_qps_*.log "$LOG_DIR"/
+scp_with_retry "$CLIENT1_ALIAS":~/memtier/logs_$DATE_TAG/* "$LOG_DIR"/ || true
+scp_with_retry "$CLIENT2_ALIAS":~/memtier/logs_$DATE_TAG/* "$LOG_DIR"/ || true
+scp_with_retry "$CLIENT3_ALIAS":~/memtier/logs_$DATE_TAG/* "$LOG_DIR"/ || true
 
 echo "$SEPARATOR"
 echo "[*] Running data.py for parsing the logs..."
