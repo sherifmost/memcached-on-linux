@@ -161,5 +161,7 @@ pkill -f "ssh -fN client_mem3"
 Disable systemctl entirely on the server to avoid issues with it re-loading memcached etc.: sudo systemctl mask memcached
 
 NEXT STEPS:
-- Make the script obtain the median not just the average latency by logging the whole latencies and calculating the median
-- Look into why/how are the client machines capped to 100% CPU while we still can push QPS to higher values
+- Make the script obtain the median not just the average latency by logging the whole latencies and calculating the median => DONE
+- Look into why/how are the client machines capped to 100% CPU while we still can push QPS to higher values => NO NEED
+- Run other workload types (ETC, USR, SYS, VAL, APP)
+- Might need to re-run USR with the new approach that obtains and parses the raw latency numbers instead of Mutilate percentiles

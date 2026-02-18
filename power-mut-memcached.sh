@@ -23,7 +23,7 @@ MUTILATE_AGENT_CORE_RANGE="0-14"   # leave upper cores free for master
 MUTILATE_AGENT_CLIENTS=96
 MUTILATE_AGENT_DEPTH=16
 MUTILATE_TEST_DURATION=60
-MUTILATE_IADIST="exponential"      # default Poisson arrivals
+MUTILATE_IADIST="exponential"      # default is Poisson arrivals
 MUTILATE_KEYSIZE="fb_key"
 MUTILATE_VALUESIZE="fb_value"
 MUTILATE_UPDATE_RATIO=0.0333       # ETC default
@@ -33,9 +33,18 @@ FORCE_PRELOAD=true                # always warm cache before measurements
 LOAD_THREADS=4
 
 # Profile-specific tweaks
+# Based on the paper: "Workload Analysis of a Large-Scale Key-Value Store", their explanation, numbers, and figures
 case "$PROFILE" in
   ETC)
     # Facebook ETC: read-heavy, Poisson arrivals (already set by default)
+    ;;
+  VAR)
+    # Paper: write-dominated; short-term browser-window-like values, obtained from digitizing Fig 2
+    MUTILATE_KEYSIZE="fixed:21"
+    MUTILATE_VALUESIZE="fixed:64"
+
+    # UPDATE-only faithful (no deletes): very write-heavy, obtained from digitizing Fig 1
+    MUTILATE_UPDATE_RATIO=4.6
     ;;
   USR)
     # USR-like: fixed key/value sizes, low write ratio
@@ -62,9 +71,8 @@ MASTER_CORE_RANGE="15-18"
 
 # QPS sweep list
 QPS_LIST=(
-  50000 
-  # 75000 100000 125000 150000 175000 200000 225000 250000
-  # 300000 325000 350000 375000 400000 425000 450000 475000 500000 
+  50000 75000 100000 125000 150000 175000 200000 225000 250000
+  300000 325000 350000 375000 400000 425000 450000 475000 500000 
   # 525000 550000 575000 600000 
   # 650000 700000 750000
   # 800000 850000 900000 950000 1000000
