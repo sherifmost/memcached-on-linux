@@ -61,9 +61,8 @@ MASTER_CORE_RANGE="15-18"
 
 # QPS sweep list
 QPS_LIST=(
-  # 50000  100000 150000 200000 250000
-  300000 
-  # 350000 400000 450000 500000
+  50000  75000 100000 125000 150000 175000 200000 225000 250000
+  300000 325000 350000 375000 400000 425000 450000 475000 500000
   # 550000 600000 650000 700000 750000
   # 800000 850000 900000 950000 1000000
   # 1050000 1100000 1150000 1200000 1250000
@@ -221,6 +220,25 @@ EOF
     set -e
     mkdir -p ~/mutilate/logs_$DATE_TAG
     cd ~/mutilate
+    LOGFILE="logs_$DATE_TAG/mutilate_master_qps_${QPS}.log"
+    cat <<META > "\$LOGFILE"
+profile=$PROFILE
+governor=$GOV_LABEL
+engine=MEMCACHED
+keysize=$MUTILATE_KEYSIZE
+valuesize=$MUTILATE_VALUESIZE
+update_ratio=$MUTILATE_UPDATE_RATIO
+iadist=$MUTILATE_IADIST
+qps_target=$QPS
+test_duration=$MUTILATE_TEST_DURATION
+threads_master=$MUTILATE_MASTER_THREADS
+clients_master=$MUTILATE_MASTER_CLIENTS
+depth_master=$MUTILATE_MASTER_DEPTH
+threads_agent=$MUTILATE_AGENT_THREADS
+clients_agent=$MUTILATE_AGENT_CLIENTS
+depth_agent=$MUTILATE_AGENT_DEPTH
+META
+
     timeout $((MUTILATE_TEST_DURATION + 10)) taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
       -s $MEMCACHED_IP \
       -T $MUTILATE_MASTER_THREADS \
@@ -234,9 +252,9 @@ EOF
       -V $MUTILATE_VALUESIZE \
       -q $QPS \
       -t $MUTILATE_TEST_DURATION \
-      $( $DO_LOADONLY && echo --noload ) \
+      --noload \
       --iadist $MUTILATE_IADIST \
-      > logs_$DATE_TAG/mutilate_master_qps_${QPS}.log 2>&1
+      >> "\$LOGFILE" 2>&1
 EOF
 done
 
