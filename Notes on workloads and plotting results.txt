@@ -1,0 +1,11 @@
+Defining capacity: point at which latency spikes greatly:
+    - Load at which p99 becomes 0.95 msec (around 5x the p99 latency at low load)
+
+Commands:
+Generate plots: python3 graph.py USR_schedutil.csv USR_performance.csv \
+  --labels schedutil performance \
+ --latency-cap 0.95
+
+Run Memcached Experiments:
+./power-mut-memcached.sh ETC performance
+

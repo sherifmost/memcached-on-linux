@@ -1,3 +1,14 @@
 Redis is single-threaded, how to deal with that?
  - Have a separate Redis process each pinned to a core and do LB client-side RR on these replicas
  - Discussing with Bhaskar: create shards of redis each with its own IO tread but each shard would have its own keyspace and each client would talk to a part of this keyspace
+
+ - Maybe test cache-like evictions by changing the memory policies? (instead of noeviction, use a policy like allkeys-lru, and/or adjust the Keyspace size to fit RAM and enable eviction)
+
+Current defaults already map closely to USR and ETC for Redis. Tweak these if needed:
+
+Increase/decrease MEMTIER_KEY_MAX to fit your memory footprint.
+Set REDIS_MAXMEM/REDIS_MAXMEM_POLICY for cache-like eviction tests.
+Adjust MEMTIER_THREADS/CLIENTS/PIPELINE per host capacity.
+
+- ToDo:
+    + Make sure the requests follow Poisson arrival (memtier doesn't support this by default)
