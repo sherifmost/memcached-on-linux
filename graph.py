@@ -161,6 +161,60 @@ def plot_power_vs_utilization(datasets, title, fname):
     plt.close()
 
 
+def plot_qps_vs_cpu(datasets, title, fname):
+    plt.figure(figsize=PLOT_SIZE)
+    for ds in datasets:
+        df = ds['df']
+        qps_col = _pick_column(df, 'QPS', 'Rate', 'target', context='qps vs cpu (x)')
+        cpu_col = _pick_column(df, 'Util', 'util', context='qps vs cpu (y)')
+        plt.scatter(
+            df[qps_col],
+            df[cpu_col],
+            label=ds['label'],
+            marker=ds['marker'],
+            s=10,
+            color=ds['color'],
+        )
+    plt.xlabel('QPS')
+    plt.ylabel('CPU Utilization (%)')
+    plt.title(title)
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(fname, dpi=1000)
+    plt.close()
+
+
+def plot_all_latency_vs_qps(datasets, title, fname, latency_cap=None):
+    plt.figure(figsize=PLOT_SIZE)
+    for ds in datasets:
+        df = ds['df']
+        qps_col = _pick_column(df, 'QPS', 'Rate', 'target', context='latency vs qps (x)')
+        # We expect P50, P90, P95, P99 columns (in µs). If missing, skip.
+        lat_cols = [c for c in ['P50_Latency', 'P90_Latency', 'P95_Latency', 'P99_Latency'] if c in df.columns]
+        for c in lat_cols:
+            df_plot = df
+            if latency_cap is not None and c == 'P99_Latency':
+                df_plot = df[df[c] <= latency_cap * 1000]
+            plt.plot(
+                df_plot[qps_col],
+                df_plot[c] / 1000.0,  # µs -> ms
+                label=f"{ds['label']} {c.replace('_Latency','')}",
+                linestyle='--',
+                marker=None,
+                color=ds['color'],
+                alpha=0.8,
+            )
+    plt.xlabel('QPS')
+    plt.ylabel('Latency (ms)')
+    plt.title(title)
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(fname, dpi=1000)
+    plt.close()
+
+
 def plot_target_vs_actual_qps(datasets, title, fname):
     plt.figure(figsize=PLOT_SIZE)
     for ds in datasets:
@@ -240,9 +294,9 @@ def plot_power_and_latency_vs_qps(datasets, title, fname, latency_cap=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot memcached-mutilate experiment graphs from CSV files. Provide 1 or more CSVs for overlay comparison.'
+        description='Plot memcached/redis experiment graphs from CSV files. Provide 1 or more CSVs for overlay comparison.'
     )
-    parser.add_argument('csv', nargs='+', help='Input CSV file(s) (comma-separated). Provide 1 or more files.')
+    parser.add_argument('csv', nargs='+', help='Input CSV file(s) located under Aggregated_Results (filenames only or paths).')
     parser.add_argument('--labels', nargs='+', default=None, help='Legend label(s) matching the CSV inputs')
     parser.add_argument('--title', default=None, help='Plot title prefix (defaults to CSV stem(s))')
     parser.add_argument('--outdir', default='.', help='Output directory for PNGs')
@@ -257,7 +311,7 @@ def main():
     if args.labels is not None and len(args.labels) != len(args.csv):
         raise SystemExit('If provided, --labels must match the number of CSV files.')
 
-    csv_paths = [Path(p) for p in args.csv]
+    csv_paths = [Path("Aggregated_Results") / Path(p) for p in args.csv]
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -317,6 +371,17 @@ def main():
         datasets,
         title=f'{title_prefix}: Power & Avg Latency vs QPS',
         fname=str(outdir / f'{prefix}-power-latency-vs-qps.png'),
+        latency_cap=args.latency_cap,
+    )
+    plot_qps_vs_cpu(
+        datasets,
+        title=f'{title_prefix}: QPS vs CPU Utilization',
+        fname=str(outdir / f'{prefix}-qps-vs-cpu.png'),
+    )
+    plot_all_latency_vs_qps(
+        datasets,
+        title=f'{title_prefix}: Latencies vs QPS',
+        fname=str(outdir / f'{prefix}-latencies-vs-qps.png'),
         latency_cap=args.latency_cap,
     )
     plot_target_vs_actual_qps(
