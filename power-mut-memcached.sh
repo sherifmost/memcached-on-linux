@@ -62,9 +62,11 @@ MASTER_CORE_RANGE="15-18"
 
 # QPS sweep list
 QPS_LIST=(
-  50000 75000 100000 125000 150000 175000 200000 225000 250000
-  300000 325000 350000 375000 400000 425000 450000 475000 500000
-  # 550000 600000 650000 700000 750000
+  50000 
+  # 75000 100000 125000 150000 175000 200000 225000 250000
+  # 300000 325000 350000 375000 400000 425000 450000 475000 500000 
+  # 525000 550000 575000 600000 
+  # 650000 700000 750000
   # 800000 850000 900000 950000 1000000
   # 1050000 1100000 1150000 1200000 1250000
   # 1300000 1350000 1400000 1450000 1500000
@@ -226,6 +228,7 @@ EOF
     mkdir -p ~/mutilate/logs_$DATE_TAG
     cd ~/mutilate
     LOGFILE="logs_$DATE_TAG/mutilate_master_qps_${QPS}.log"
+    LATFILE="logs_$DATE_TAG/mutilate_lat_qps_${QPS}.lat"
     cat <<META > "\$LOGFILE"
 profile=$PROFILE
 governor=$GOV_LABEL
@@ -258,6 +261,7 @@ META
       -q $QPS \
       -t $MUTILATE_TEST_DURATION \
       -w 10 \
+      --save "\$LATFILE" \
       --noload \
       --iadist $MUTILATE_IADIST \
       >> "\$LOGFILE" 2>&1
@@ -268,6 +272,7 @@ echo "$SEPARATOR"
 echo "[*] Copying logs from server to local directory..."
 scp_with_retry "$SERVER_ALIAS":logs_$DATE_TAG/powerstat_rate_*.txt "$LOG_DIR"/
 scp_with_retry "$CLIENT3_ALIAS":~/mutilate/logs_$DATE_TAG/mutilate_master_qps_*.log "$LOG_DIR"/
+scp_with_retry "$CLIENT3_ALIAS":~/mutilate/logs_$DATE_TAG/mutilate_lat_qps_*.lat "$LOG_DIR"/ || true
 scp_with_retry "$CLIENT3_ALIAS":~/mutilate/logs_$DATE_TAG/mutilate_load.log "$LOG_DIR"/ || true
 
 echo "$SEPARATOR"
