@@ -15,6 +15,7 @@ MEMCACHED_PORT=11211
 MEMCACHED_THREADS=20
 MEMCACHED_CORE_RANGE="0-19"
 MEMCACHED_MAX_CONNECTIONS=50000
+# MEMCACHED_MEMORY_MB=64000
 
 # Agent side (3 hosts) - overridden per profile if needed
 MUTILATE_AGENT_THREADS=15
@@ -26,15 +27,15 @@ MUTILATE_IADIST="exponential"      # default Poisson arrivals
 MUTILATE_KEYSIZE="fb_key"
 MUTILATE_VALUESIZE="fb_value"
 MUTILATE_UPDATE_RATIO=0.0333       # ETC default
-DO_LOADONLY=true
-LOAD_THREADS=4
-DO_LOADONLY=true
+# MUTILATE_RECORDS=10000             # default mutilate record count
+DO_LOADONLY=true                  # legacy flag
+FORCE_PRELOAD=true                # always warm cache before measurements
 LOAD_THREADS=4
 
 # Profile-specific tweaks
 case "$PROFILE" in
   ETC)
-    # Facebook ETC: read-heavy, Poisson arrivals (already set)
+    # Facebook ETC: read-heavy, Poisson arrivals (already set by default)
     ;;
   USR)
     # USR-like: fixed key/value sizes, low write ratio
@@ -61,7 +62,7 @@ MASTER_CORE_RANGE="15-18"
 
 # QPS sweep list
 QPS_LIST=(
-  50000  75000 100000 125000 150000 175000 200000 225000 250000
+  50000 75000 100000 125000 150000 175000 200000 225000 250000
   300000 325000 350000 375000 400000 425000 450000 475000 500000
   # 550000 600000 650000 700000 750000
   # 800000 850000 900000 950000 1000000
@@ -151,25 +152,7 @@ echo "$SEPARATOR"
 echo "[*] Sleeping for warm-up and sync (${SYNC_DELAY}s)..."
 sleep "$SYNC_DELAY"
 
-# Optional preload to avoid cold cache
-if $DO_LOADONLY; then
-  echo "$SEPARATOR"
-  echo "[*] Loading dataset (one-time) from master..."
-  ssh_with_retry "$CLIENT3_ALIAS" <<EOF
-    set -e
-    cd ~/mutilate
-    taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
-      -s $MEMCACHED_IP \
-      -T $LOAD_THREADS \
-      --loadonly \
-      -K $MUTILATE_KEYSIZE \
-      -V $MUTILATE_VALUESIZE \
-      -u $MUTILATE_UPDATE_RATIO \
-      --iadist $MUTILATE_IADIST \
-      > ~/mutilate/logs_$DATE_TAG/mutilate_load.log 2>&1
-EOF
-  DO_LOADONLY=false
-fi
+LOADED=false
 
 echo "$SEPARATOR"
 echo "[*] Starting QPS loop on server..."
@@ -202,6 +185,28 @@ EOF
     sleep 2
     pgrep -f "mutilate .* -A" >/dev/null || { echo "[!!] Agent not running on client3"; exit 1; }
 EOF
+
+  if [ "$LOADED" = false ]; then
+    echo "$SEPARATOR"
+    echo "[*] Loading dataset (write-only) from master right before measurement..."
+    ssh_with_retry "$CLIENT3_ALIAS" <<EOF
+      set -e
+      cd ~/mutilate
+      mkdir -p logs_$DATE_TAG
+      {
+        echo "LOAD_START \$(date)"
+        taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
+          -s $MEMCACHED_IP \
+          -T $LOAD_THREADS \
+          -K $MUTILATE_KEYSIZE \
+          -V $MUTILATE_VALUESIZE \
+          --loadonly
+        rc=\$?
+        echo "LOAD_EXIT \$rc \$(date)"
+      } > ~/mutilate/logs_$DATE_TAG/mutilate_load.log 2>&1
+EOF
+    LOADED=true
+  fi
 
   echo "$SEPARATOR"
   echo "[*] QPS: $QPS"
@@ -239,7 +244,7 @@ clients_agent=$MUTILATE_AGENT_CLIENTS
 depth_agent=$MUTILATE_AGENT_DEPTH
 META
 
-    timeout $((MUTILATE_TEST_DURATION + 10)) taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
+    timeout $((MUTILATE_TEST_DURATION + 20)) taskset -c ${MASTER_CORE_RANGE:-12-15} ./mutilate \
       -s $MEMCACHED_IP \
       -T $MUTILATE_MASTER_THREADS \
       -C $MUTILATE_MASTER_CLIENTS \
@@ -252,6 +257,7 @@ META
       -V $MUTILATE_VALUESIZE \
       -q $QPS \
       -t $MUTILATE_TEST_DURATION \
+      -w 10 \
       --noload \
       --iadist $MUTILATE_IADIST \
       >> "\$LOGFILE" 2>&1
@@ -262,6 +268,7 @@ echo "$SEPARATOR"
 echo "[*] Copying logs from server to local directory..."
 scp_with_retry "$SERVER_ALIAS":logs_$DATE_TAG/powerstat_rate_*.txt "$LOG_DIR"/
 scp_with_retry "$CLIENT3_ALIAS":~/mutilate/logs_$DATE_TAG/mutilate_master_qps_*.log "$LOG_DIR"/
+scp_with_retry "$CLIENT3_ALIAS":~/mutilate/logs_$DATE_TAG/mutilate_load.log "$LOG_DIR"/ || true
 
 echo "$SEPARATOR"
 echo "[*] Running data.py for parsing the logs..."
