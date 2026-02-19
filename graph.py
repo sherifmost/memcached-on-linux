@@ -36,6 +36,11 @@ def _pick_column(df, *candidates, context=''):
 def read_and_clean_csv(filename):
     df = pd.read_csv(filename, sep=',', comment='#')
     df = df.replace(',', '', regex=True).apply(pd.to_numeric, errors='coerce')
+    # ensure sorted by QPS/Rate for proper line plotting
+    for col in ("Rate", "QPS", "target"):
+        if col in df.columns:
+            df = df.sort_values(by=col)
+            break
     return df
 
 
@@ -62,6 +67,7 @@ def plot_power_vs_target(datasets, title, fname, latency_cap=None, linear_ref=Fa
         df = _filter_by_latency(ds['df'], latency_cap)
         if df.empty:
             continue
+        df = df.sort_values(by=_pick_column(df, 'Rate', 'QPS', 'target', context='power vs target (x)'))
         x_col = _pick_column(df, 'Rate', 'QPS', 'target', context='power vs target (x)')
         y_col = _pick_column(df, 'Power', 'power', context='power vs target (y)')
         plt.scatter(
@@ -97,8 +103,10 @@ def plot_util_vs_ops_latency(datasets, title, fname):
     ax = plt.gca()
     for ds in datasets:
         df = ds['df']
+        qps_col = _pick_column(df, 'Rate', 'QPS', 'target', context='util vs ops/latency (qps)')
         util_col = _pick_column(df, 'Util', 'util', context='util vs ops/latency (util)')
         ops_col = _pick_column(df, 'QPS', 'Ops', 'ops', context='util vs ops/latency (ops)')
+        df = df.sort_values(by=qps_col)
         ax.scatter(
             df[util_col],
             df[ops_col],
@@ -115,8 +123,10 @@ def plot_util_vs_ops_latency(datasets, title, fname):
     ax_right = ax.twinx()
     for ds in datasets:
         df = ds['df']
+        qps_col = _pick_column(df, 'Rate', 'QPS', 'target', context='util vs ops/latency (qps)')
         util_col = _pick_column(df, 'Util', 'util', context='util vs ops/latency (util)')
         lat_col = _pick_column(df, 'P99_Latency', 'latency', 'Latency', context='util vs ops/latency (latency)')
+        df = df.sort_values(by=qps_col)
         lat_ms = df[lat_col] / 1000.0  # mutilate reports µs
         ax_right.scatter(
             df[util_col],
@@ -165,7 +175,7 @@ def plot_qps_vs_cpu(datasets, title, fname):
     plt.figure(figsize=PLOT_SIZE)
     for ds in datasets:
         df = ds['df']
-        qps_col = _pick_column(df, 'QPS', 'Rate', 'target', context='qps vs cpu (x)')
+        qps_col = _pick_column(df, 'Rate', 'QPS', 'target', context='qps vs cpu (x)')
         cpu_col = _pick_column(df, 'Util', 'util', context='qps vs cpu (y)')
         plt.scatter(
             df[qps_col],
@@ -189,7 +199,7 @@ def plot_all_latency_vs_qps(datasets, title, fname, latency_cap=None):
     plt.figure(figsize=PLOT_SIZE)
     for ds in datasets:
         df = ds['df']
-        qps_col = _pick_column(df, 'QPS', 'Rate', 'target', context='latency vs qps (x)')
+        qps_col = _pick_column(df, 'Rate', 'QPS', 'target', context='latency vs qps (x)')
         # We expect P50, P90, P95, P99 columns (in µs). If missing, skip.
         lat_cols = [c for c in ['P50_Latency', 'P90_Latency', 'P95_Latency', 'P99_Latency'] if c in df.columns]
         for c in lat_cols:
@@ -253,13 +263,14 @@ def plot_power_and_latency_vs_qps(datasets, title, fname, latency_cap=None):
 
     for ds in datasets:
         df = ds['df']
-        qps_col = _pick_column(df, 'QPS', 'Rate', 'target', context='power/latency vs qps (x)')
+        qps_col = _pick_column(df, 'Rate', 'QPS', 'target', context='power/latency vs qps (x)')
         power_col = _pick_column(df, 'Power', 'power', context='power/latency vs qps (power)')
         lat_col = _pick_column(df, 'P99_Latency', 'Latency', 'latency', 'p99', context='power/latency vs qps (latency)')
 
         if latency_cap is not None:
             df = df[df[lat_col] <= latency_cap * 1000]  # cap provided in ms, data in µs
         lat_ms = df[lat_col] / 1000.0  # convert µs -> ms
+        df = df.sort_values(by=qps_col)
         ax_left.plot(df[qps_col], df[power_col], marker=ds['marker'], color=ds['color'],
                      label=f"{ds['label']} Power", linestyle='-')
         ax_right.plot(df[qps_col], lat_ms, marker=ds['lat_marker'], color=ds['color'],
