@@ -165,3 +165,4 @@ NEXT STEPS:
 - Look into why/how are the client machines capped to 100% CPU while we still can push QPS to higher values => NO NEED
 - Run other workload types (ETC, USR, SYS, VAL, APP)
 - Might need to re-run USR with the new approach that obtains and parses the raw latency numbers instead of Mutilate percentiles
+- See if there is a way to include DELETEs as well since mutilate only supports set (update) and get by default

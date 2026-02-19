@@ -41,17 +41,30 @@ case "$PROFILE" in
   VAR)
     # Paper: write-dominated; short-term browser-window-like values, obtained from digitizing Fig 2
     MUTILATE_KEYSIZE="fixed:21"
-    MUTILATE_VALUESIZE="fixed:64"
+    MUTILATE_VALUESIZE="fixed:64" # picked as a representative small VAR value; consider sweeping 32/64/128
 
-    # UPDATE-only faithful (no deletes): very write-heavy, obtained from digitizing Fig 1
-    MUTILATE_UPDATE_RATIO=4.6
+    # UPDATE-only faithful (no deletes): very write-heavy, picked as a representative value based on digitizing Fig. 1
+    MUTILATE_UPDATE_RATIO=0.82
+    ;;
+  SYS)
+    MUTILATE_KEYSIZE="fixed:21" # just a “small key” placeholder.
+    # This comes from the Request Sizes discussion: the authors say that for SYS, values near 500 B account for ~80% of SYS cache weight
+    MUTILATE_VALUESIZE="fixed:500" 
+
+    MUTILATE_UPDATE_RATIO=0.324      # SET/(SET+GET): picked as a representative value based on digitizing Fig. 1
     ;;
   USR)
     # USR-like: fixed key/value sizes, low write ratio
     MUTILATE_KEYSIZE="fixed:21"
     MUTILATE_VALUESIZE="fixed:2"
-    MUTILATE_UPDATE_RATIO=0.002   # or raise to 0.018 if you want more misses
+    MUTILATE_UPDATE_RATIO=0.002   # or raise if you want more misses
     ;;
+  APP)
+   MUTILATE_KEYSIZE="fixed:31" # over 90% of APP’s keys are 31 bytes long,
+   MUTILATE_VALUESIZE="fixed:270" # representative value based on Fig. 2 and "values sizes around 270 B show up in more than 30% of SET requests"
+   
+   MUTILATE_UPDATE_RATIO=0.051      # SET/(SET+GET): picked as a representative value based on digitizing Fig. 1
+   ;;
   *)
     echo "[!!] Unknown profile '$PROFILE' (use ETC or USR)"
     exit 1
