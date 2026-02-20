@@ -1,25 +1,28 @@
 #!/bin/bash
 
-# === Configuration selection ===
-PROFILE="${1:-ETC}"   # ETC (default) or USR
-GOV_LABEL="${2:-performance}"  # frequency governor label
+# === Configuration selection (positional parameters) ===
+# 1: PROFILE (ETC|USR), 2: GOV_LABEL, 3: MACHINE_LABEL
+# 4: SERVER_ALIAS, 5-7: CLIENT1/2/3_ALIAS, 8: MEMCACHED_IP
+# 9: MEMCACHED_CORE_RANGE, 10: MUTILATE_AGENT_CORE_RANGE, 11: MASTER_CORE_RANGE
+PROFILE="${1:-ETC}"          # workload type
+GOV_LABEL="${2:-performance}" # governor label
+MACHINE_LABEL="${3:-xl170}"
 
-# Common host settings
-SERVER_ALIAS="server_mem"
-CLIENT1_ALIAS="client_mem1"
-CLIENT2_ALIAS="client_mem2"
-CLIENT3_ALIAS="client_mem3"   # also used as mutilate master
+SERVER_ALIAS="${4:-server_mem}"
+CLIENT1_ALIAS="${5:-client_mem1}"
+CLIENT2_ALIAS="${6:-client_mem2}"
+CLIENT3_ALIAS="${7:-client_mem3}"   # also used as mutilate master
 
-MEMCACHED_IP="10.10.1.1"
+MEMCACHED_IP="${8:-10.10.1.1}"
 MEMCACHED_PORT=11211
-MEMCACHED_THREADS=20
-MEMCACHED_CORE_RANGE="0-19"
+MEMCACHED_THREADS="${12:-20}"
+MEMCACHED_CORE_RANGE="${9:-0-19}"
 MEMCACHED_MAX_CONNECTIONS=50000
 # MEMCACHED_MEMORY_MB=64000
 
 # Agent side (3 hosts) - overridden per profile if needed
-MUTILATE_AGENT_THREADS=15
-MUTILATE_AGENT_CORE_RANGE="0-14"   # leave upper cores free for master
+MUTILATE_AGENT_THREADS="${13:-15}"
+MUTILATE_AGENT_CORE_RANGE="${10:-0-14}"   # leave upper cores free for master
 MUTILATE_AGENT_CLIENTS=96
 MUTILATE_AGENT_DEPTH=16
 MUTILATE_TEST_DURATION=60
@@ -27,7 +30,6 @@ MUTILATE_IADIST="exponential"      # default is Poisson arrivals
 MUTILATE_KEYSIZE="fb_key"
 MUTILATE_VALUESIZE="fb_value"
 MUTILATE_UPDATE_RATIO=0.0333       # ETC default
-# MUTILATE_RECORDS=10000             # default mutilate record count
 DO_LOADONLY=true                  # legacy flag
 FORCE_PRELOAD=true                # always warm cache before measurements
 LOAD_THREADS=4
@@ -71,22 +73,23 @@ case "$PROFILE" in
     ;;
 esac
 
-MUTILATE_AGENT_1_ALIAS="10.10.1.2"
-MUTILATE_AGENT_2_ALIAS="10.10.1.3"
-MUTILATE_AGENT_3_ALIAS="localhost"
+MUTILATE_AGENT_1_ALIAS="${14:-10.10.1.2}"
+MUTILATE_AGENT_2_ALIAS="${15:-10.10.1.3}"
+MUTILATE_AGENT_3_ALIAS="${16:-localhost}"
 
 # Master side (on CLIENT3_ALIAS)
 MUTILATE_MASTER_THREADS=4
 MUTILATE_MASTER_CLIENTS=96
 MUTILATE_MASTER_QPS=1000           # measurement stream (low-rate)
 MUTILATE_MASTER_DEPTH=16           # open-loop measurement pipeline
-MASTER_CORE_RANGE="15-18"
+MASTER_CORE_RANGE="${11:-15-18}"
 
 # QPS sweep list
 QPS_LIST=(
   50000 75000 100000 125000 150000 175000 200000 225000 250000
   300000 325000 350000 375000 400000 425000 450000 475000 500000 
-  # 525000 550000 575000 600000 
+  525000 550000 
+  # 575000 600000 
   # 650000 700000 750000
   # 800000 850000 900000 950000 1000000
   # 1050000 1100000 1150000 1200000 1250000
@@ -97,7 +100,7 @@ SYNC_DELAY=10
 POWER_STAT_DELAY=15
 
 DATE_TAG=$(date '+%Y-%m-%d_%H-%M-%S')
-LOG_DIR="${PROFILE}_${GOV_LABEL}_logs_xl170/run_${DATE_TAG}"
+LOG_DIR="${PROFILE}_${GOV_LABEL}_logs_${MACHINE_LABEL}/run_${DATE_TAG}"
 mkdir -p "$LOG_DIR"
 
 SEPARATOR="------------------------------------------------------------"
