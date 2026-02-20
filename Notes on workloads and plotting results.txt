@@ -9,3 +9,44 @@ Generate plots: python3 graph.py USR_schedutil.csv USR_performance.csv \
 Run Memcached Experiments:
 ./power-mut-memcached.sh ETC performance
 
+For a parameterized run to test on a different machine other than the default xl170
+
+c220g1 (IMPORTANT NODE: for c220g1, there are 2 sockets but memcached requests only go through to one socket, so I disabled the second socket and ran the experiment with the first socket only):
+COMMAND to disable the second socket: 
+for cpu in {8..15} {24..31}; do
+  echo 0 | sudo tee /sys/devices/system/cpu/cpu${cpu}/online
+done
+
+./power-mut-memcached.sh ETC performance c220g1 server_mem_c220g1 client_mem1_c220g1 client_mem2_c220g1 client_mem3_c220g1 10.10.1.1 0-31 0-26 28-30 32 27 10.10.1.2 10.10.1.3 localhost
+
+  ETC            # 1: PROFILE (ETC or USR; default ETC)
+  schedutil      # 2: GOV_LABEL (default performance)
+  c220g1         # 3: MACHINE_LABEL for log folder (default xl170)
+  server_mem     # 4: SERVER_ALIAS (default server_mem)
+  client_mem1    # 5: CLIENT1_ALIAS (default client_mem1)
+  client_mem2    # 6: CLIENT2_ALIAS (default client_mem2)
+  client_mem3    # 7: CLIENT3_ALIAS / master host (default client_mem3)
+  10.10.1.1      # 8: MEMCACHED_IP (default 10.10.1.1)
+  0-31           # 9: MEMCACHED_CORE_RANGE (default 0-19)
+  0-27           #10: MUTILATE_AGENT_CORE_RANGE (default 0-14)
+  28-31          #11: MASTER_CORE_RANGE (default 15-18)
+  32             #12: MEMCACHED_THREADS (default 20)
+  24             #13: MUTILATE_AGENT_THREADS (default 15)
+  10.10.1.2      #14: MUTILATE_AGENT_1_ALIAS (default 10.10.1.2)
+  10.10.1.3      #15: MUTILATE_AGENT_2_ALIAS (default 10.10.1.3)
+  localhost      #16: MUTILATE_AGENT_3_ALIAS (default localhost)
+
+Run Redis Experiments:
+
+Installing Redis:
+./install-redis-memtier.sh
+
+# Or pass the custom host aliases as argument
+./install-redis-memtier.sh hostA hostB hostC
+
+Running Single-Instance Redis:
+./power-memt-redis-single.sh
+
+Running Sharded Redis:
+./power-memt-redis.sh USR schedutil
+

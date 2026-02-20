@@ -12,10 +12,10 @@ sudo apt-get install -y linux-tools-common linux-tools-$(uname -r)
 # 2) If the driver isn’t loaded, load a generic one (Intel boxes usually use acpi_cpufreq when intel_pstate is unavailable)
 sudo modprobe acpi_cpufreq  # if this errors, check dmesg; intel_pstate may already be built-in
 
-# 3) Set governor and min/max to 3.4 GHz
+# 3) Set governor and min/max to 3.2 GHz
 sudo cpupower frequency-set -g performance
-sudo cpupower frequency-set -u 3.4GHz -d 3.4GHz
+sudo cpupower frequency-set -u 3.2GHz -d 3.2GHz
 
 Set back to schedutil:
 sudo cpupower frequency-set -g schedutil
-sudo cpupower frequency-set -d 1.2GHz -u 3.4GHz
+sudo cpupower frequency-set -d 1.2GHz -u 3.2GHz

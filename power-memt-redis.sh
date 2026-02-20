@@ -25,7 +25,9 @@ REDIS_IO_THREADS=4
 REDIS_IO_THREADS_DO_READS="yes"
 
 # Memtier (load generator)
-MEMTIER_THREADS=8
+# To reduce client-side oversubscription, run 2 threads per shard and pin each
+# memtier process to a unique 2-core slice on the client host.
+MEMTIER_THREADS=2
 MEMTIER_CLIENTS=50
 MEMTIER_PIPELINE=32
 MEMTIER_RATIO="1:9"           # SET:GET (overridden per profile)
@@ -120,7 +122,7 @@ EOF
 
 shard=0
 core=$REDIS_CORES_START
-while [ \$shard -lt $REDIS_SHARDS ]; do
+while [ $shard -lt $REDIS_SHARDS ]; do
   port=$((REDIS_PORT_BASE + shard))
   ssh_with_retry "$SERVER_ALIAS" <<EOF
     set -e
@@ -176,7 +178,7 @@ fi
 # === QPS sweep ===
 echo "$SEPARATOR"
 echo "[*] Starting QPS loop..."
-for QPS in "\${QPS_LIST[@]}"; do
+for QPS in "${QPS_LIST[@]}"; do
   echo "$SEPARATOR"
   echo "[*] QPS: $QPS"
 
@@ -191,10 +193,13 @@ for QPS in "\${QPS_LIST[@]}"; do
   echo "$SEPARATOR"
   echo "[*] Running memtier for sharded Redis... (QPS total=$QPS)"
   HOSTS=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
+  CORE_SLICES=( "0-1" "2-3" "4-5" "6-7" "8-9" "10-11" "12-13" "14-15" "16-17" "18-19"
+                "0-1" "2-3" "4-5" "6-7" "8-9" "10-11" "12-13" "14-15" "16-17" "18-19" )
   pids=()
   shard=0
   for port in $(seq $REDIS_PORT_BASE $((REDIS_PORT_BASE + REDIS_SHARDS - 1))); do
     h=${HOSTS[$((shard % 3))]}
+    core_slice=${CORE_SLICES[$shard]}
     prefix="s${shard}:"
     qps_shard=$(( (QPS + REDIS_SHARDS - 1) / REDIS_SHARDS ))
     total_conns=$((MEMTIER_THREADS * MEMTIER_CLIENTS))
@@ -203,7 +208,7 @@ ssh_with_retry "$h" <<EOF &
       set -e
       mkdir -p ~/memtier/logs_$DATE_TAG
       cd ~/memtier
-      memtier_benchmark \
+      taskset -c $core_slice memtier_benchmark \
         --server=$REDIS_IP --port=$port --protocol=redis \
         --clients=$MEMTIER_CLIENTS --threads=$MEMTIER_THREADS \
         --test-time=$MEMTIER_TEST_TIME \
