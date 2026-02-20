@@ -280,7 +280,7 @@ for QPS in "${QPS_LIST[@]}"; do
   echo "$SEPARATOR"
   echo "[*] QPS: $QPS"
 
-  ssh_with_retry "$SERVER_ALIAS" "cd logs_$DATE_TAG && nohup sudo powerstat -aRn -d $POWER_STAT_DELAY 1 50 > powerstat_rate_${QPS}.txt 2>&1 </dev/null & echo \$! > powerstat_pid.txt"
+  ssh_with_retry "$SERVER_ALIAS" "nohup sudo powerstat -aRn -d $POWER_STAT_DELAY 1 50 > logs_$DATE_TAG/powerstat_rate_${QPS}.txt 2>&1 & echo \$! > powerstat_pid.txt"
   echo "[*] Warm-up ${SYNC_DELAY}s..."
   sleep "$SYNC_DELAY"
 
