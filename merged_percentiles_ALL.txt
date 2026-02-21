@@ -1,0 +1,12 @@
+merged percentiles (profile=ALL) from HDR .txt histograms
+NOTE: values are in the same units memtier used in its histogram files.
+
+QPS=300000  OP=ALL  samples=72022740  files=12
+  p50=3.29  p90=6.72  p95=7.52  p99=9.47  p99.9=35.84  p99.99=74.75
+
+QPS=300000  OP=GET  samples=69697612  files=12
+  p50=3.29  p90=6.72  p95=7.52  p99=9.47  p99.9=35.33  p99.99=74.24
+
+QPS=300000  OP=SET  samples=2325128  files=12
+  p50=3.41  p90=6.91  p95=7.74  p99=9.66  p99.9=48.13  p99.99=89.6
+

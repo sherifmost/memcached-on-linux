@@ -4,7 +4,7 @@ Defining capacity: point at which latency spikes greatly:
 Commands:
 Generate plots: python3 graph.py USR_schedutil.csv USR_performance.csv \
   --labels schedutil performance \
- --latency-cap 0.95
+ --latency-cap 0.95 --machine c220g1
 
 Run Memcached Experiments:
 ./power-mut-memcached.sh ETC performance
@@ -35,6 +35,10 @@ done
   10.10.1.2      #14: MUTILATE_AGENT_1_ALIAS (default 10.10.1.2)
   10.10.1.3      #15: MUTILATE_AGENT_2_ALIAS (default 10.10.1.3)
   localhost      #16: MUTILATE_AGENT_3_ALIAS (default localhost)
+
+For d6515: 
+
+./power-mut-memcached.sh ETC performance d6515 server_mem_d6515 client_mem1_d6515 client_mem2_d6515 client_mem3_d6515 10.10.1.1 0-63 0-58 59-62 64 59 10.10.1.2 10.10.1.3 localhost
 
 Run Redis Experiments:
 

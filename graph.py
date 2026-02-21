@@ -308,9 +308,14 @@ def main():
         description='Plot memcached/redis experiment graphs from CSV files. Provide 1 or more CSVs for overlay comparison.'
     )
     parser.add_argument('csv', nargs='+', help='Input CSV file(s) located under Aggregated_Results (filenames only or paths).')
+    parser.add_argument('--machine', default=None,
+                        help='Machine label; if set, CSVs are loaded from Aggregated_Results/<machine>/')
+    parser.add_argument('--profile', default=None,
+                        help='Workload/profile label (e.g., ETC, USR); if not set, inferred from first CSV stem prefix before underscore.')
     parser.add_argument('--labels', nargs='+', default=None, help='Legend label(s) matching the CSV inputs')
     parser.add_argument('--title', default=None, help='Plot title prefix (defaults to CSV stem(s))')
-    parser.add_argument('--outdir', default='.', help='Output directory for PNGs')
+    parser.add_argument('--outdir', default=None,
+                        help='Output directory for PNGs (defaults to Plots/Memcached/<machine>/<profile> if --machine set, else Plots/<profile>)')
     parser.add_argument('--prefix', default=None, help='Filename prefix for PNGs (defaults to CSV stem(s))')
     parser.add_argument('--latency-cap', type=float, default=None,
                         help='Maximum P99 latency (ms); points above are dropped from all plots.')
@@ -322,11 +327,25 @@ def main():
     if args.labels is not None and len(args.labels) != len(args.csv):
         raise SystemExit('If provided, --labels must match the number of CSV files.')
 
-    csv_paths = [Path("Aggregated_Results") / Path(p) for p in args.csv]
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    base_dir = Path("Aggregated_Results")
+    if args.machine:
+        base_dir = base_dir / args.machine
+    csv_paths = [base_dir / Path(p) for p in args.csv]
 
     stems = [p.stem for p in csv_paths]
+    inferred_profile = args.profile if hasattr(args, "profile") else None
+    if inferred_profile is None and stems:
+        inferred_profile = stems[0].split('_')[0] if '_' in stems[0] else stems[0]
+    
+    if args.outdir:
+        outdir = Path(args.outdir)
+    else:
+        prof_dir = inferred_profile or "default"
+        if args.machine:
+            outdir = Path("Plots") / "Memcached" / args.machine / prof_dir
+        else:
+            outdir = Path("Plots") / prof_dir
+    outdir.mkdir(parents=True, exist_ok=True)
     
     # Generate default title and prefix based on number of files
     if len(stems) == 1:
