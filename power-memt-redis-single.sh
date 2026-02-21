@@ -1,12 +1,8 @@
 #!/bin/bash
 # Single-Redis experiment (no sharding). Uses memtier on up to 3 clients.
-# Fixes in this version:
-#  1) macOS Bash 3.2 compatible (no local -n)
-#  2) Redis start: daemonize + verify
-#  3) Preload: partitioned ranges, key-pattern=P:P, -n allkeys
-#  4) memtier CLI: portable short flags (-s -p -P redis -n)
-#  5) IMPORTANT: memtier build requires key-minimum > 0 => use 1-based keys everywhere
-#  6) On failure: prints HEAD+TAIL of remote log
+# This version adds:
+#  - per-process percentiles in memtier logs (--print-percentiles)
+#  - correct global percentiles by merging HDR histogram .txt files across clients
 
 set -euo pipefail
 
@@ -33,8 +29,10 @@ MEMTIER_THREADS=4
 MEMTIER_CLIENTS=50
 MEMTIER_PIPELINE=32
 
+# Per-process percentiles printed into memtier log (sanity check only)
+MEMTIER_PRINT_PCT="50,90,95,99,99.9,99.99"
+
 # 1-based keyspace due to memtier constraint: key-minimum must be > 0
-# Keys will be IDs in [1..MEMTIER_KEY_COUNT]
 MEMTIER_KEY_COUNT=5000000
 MEMTIER_KEY_MIN_ID=1
 MEMTIER_KEY_MAX_ID=$MEMTIER_KEY_COUNT
@@ -188,20 +186,14 @@ if $DO_LOADONLY; then
 
   hosts=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
 
-  # total keys = KEY_COUNT, keys are [1..KEY_COUNT]
   total_keys=$MEMTIER_KEY_COUNT
   base=$((total_keys / 3))
   rem=$((total_keys % 3))
 
-  # Helper: compute partition sizes as evenly as possible
-  part0=$base
-  part1=$base
-  part2=$base
+  part0=$base; part1=$base; part2=$base
   [ $rem -ge 1 ] && part0=$((part0 + 1))
   [ $rem -ge 2 ] && part1=$((part1 + 1))
-  # part2 gets the rest (already covered)
 
-  # Partition ranges (1-based)
   kmin0=$MEMTIER_KEY_MIN_ID
   kmax0=$((kmin0 + part0 - 1))
 
@@ -230,9 +222,9 @@ if $DO_LOADONLY; then
       data_arg_fallback="-d $MEMTIER_DATA_SIZE"
     fi
 
-    remote_log="~/memtier_logs/$DATE_TAG/memtier_preload_${PROFILE}_${idx}.log"
+    remote_log="~/memtier_logs/$DATE_TAG/preload/memtier_preload_${PROFILE}_${idx}.log"
     remote_cmd="set -e; \
-      LOGROOT=\$HOME/memtier_logs/$DATE_TAG; mkdir -p \$LOGROOT; ulimit -n 200000; \
+      LOGROOT=\$HOME/memtier_logs/$DATE_TAG/preload; mkdir -p \$LOGROOT; ulimit -n 200000; \
       MBIN=\$(command -v memtier_benchmark 2>/dev/null || echo \$HOME/memtier/memtier_benchmark); \
       ( taskset -c $MEMTIER_CORE_RANGE \$MBIN \
           -s $REDIS_IP -p $REDIS_PORT -P redis \
@@ -268,7 +260,6 @@ if $DO_LOADONLY; then
   done
 
   wait_jobs_or_report "preload"
-
   DO_LOADONLY=false
   echo "[*] Preload done."
 fi
@@ -277,10 +268,14 @@ fi
 echo "$SEPARATOR"
 echo "[*] Starting QPS loop..."
 for QPS in "${QPS_LIST[@]}"; do
+  QPS_DIR="$LOG_DIR/qps_${QPS}"
+  mkdir -p "$QPS_DIR"
+  SERVER_QDIR="logs_$DATE_TAG/qps_${QPS}"
   echo "$SEPARATOR"
   echo "[*] QPS: $QPS"
 
-  ssh_with_retry "$SERVER_ALIAS" "nohup sudo powerstat -aRn -d $POWER_STAT_DELAY 1 50 > logs_$DATE_TAG/powerstat_rate_${QPS}.txt 2>&1 & echo \$! > powerstat_pid.txt"
+  ssh_with_retry "$SERVER_ALIAS" "mkdir -p $SERVER_QDIR"
+  ssh_with_retry "$SERVER_ALIAS" "cd $SERVER_QDIR && nohup sudo powerstat -aRn -d $POWER_STAT_DELAY 1 50 > powerstat_rate_${QPS}.txt 2>&1 & echo \$! > powerstat_pid.txt"
   echo "[*] Warm-up ${SYNC_DELAY}s..."
   sleep "$SYNC_DELAY"
 
@@ -300,15 +295,16 @@ for QPS in "${QPS_LIST[@]}"; do
       data_arg_fallback="-d $MEMTIER_DATA_SIZE"
     fi
 
+    # If Zipf workload, pass exponent
     if [[ "$MEMTIER_KEY_PATTERN" == Z:* ]]; then
       zipf_arg="--key-zipf-exp=$MEMTIER_ZIPF_EXP"
     else
       zipf_arg=""
     fi
 
-    remote_log="~/memtier_logs/$DATE_TAG/memtier_${PROFILE}_qps_${QPS}_c${idx}.log"
+    remote_log="~/memtier_logs/$DATE_TAG/qps_${QPS}/memtier_${PROFILE}_qps_${QPS}_c${idx}.log"
     remote_cmd="set -e; \
-      LOGROOT=\$HOME/memtier_logs/$DATE_TAG; mkdir -p \$LOGROOT; ulimit -n 200000; \
+      LOGROOT=\$HOME/memtier_logs/$DATE_TAG/qps_${QPS}; mkdir -p \$LOGROOT; ulimit -n 200000; \
       MBIN=\$(command -v memtier_benchmark 2>/dev/null || echo \$HOME/memtier/memtier_benchmark); \
       ( taskset -c $MEMTIER_CORE_RANGE \$MBIN \
           -s $REDIS_IP -p $REDIS_PORT -P redis \
@@ -322,6 +318,7 @@ for QPS in "${QPS_LIST[@]}"; do
           --key-prefix=\"$KEY_PREFIX\" \
           --distinct-client-seed \
           --rate-limiting=$per_conn \
+          --print-percentiles=$MEMTIER_PRINT_PCT \
           --hdr-file-prefix=\$LOGROOT/memtier_${PROFILE}_qps_${QPS}_c${idx} \
           $data_arg_primary \
           --hide-histogram \
@@ -338,6 +335,7 @@ for QPS in "${QPS_LIST[@]}"; do
           --key-prefix=\"$KEY_PREFIX\" \
           --distinct-client-seed \
           --rate-limiting=$per_conn \
+          --print-percentiles=$MEMTIER_PRINT_PCT \
           --hdr-file-prefix=\$LOGROOT/memtier_${PROFILE}_qps_${QPS}_c${idx} \
           $data_arg_fallback \
           --hide-histogram \
@@ -355,13 +353,173 @@ done
 # ---------------- Copy logs ----------------
 echo "$SEPARATOR"
 echo "[*] Copying logs..."
-scp_safe "$SERVER_ALIAS:logs_$DATE_TAG/powerstat_rate_*.txt" "$LOG_DIR/" || true
+scp_safe -r "$SERVER_ALIAS:logs_$DATE_TAG/qps_*" "$LOG_DIR/" || true
 scp_safe "$SERVER_ALIAS:logs_$DATE_TAG/redis_server.log" "$LOG_DIR/" || true
 scp_safe "$SERVER_ALIAS:logs_$DATE_TAG/redis.pid" "$LOG_DIR/" || true
 
 for h in "$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS"; do
-  scp_safe "$h:~/memtier_logs/$DATE_TAG/*" "$LOG_DIR/" || true
+  scp_safe -r "$h:~/memtier_logs/$DATE_TAG/qps_*" "$LOG_DIR/" || true
 done
+
+# ---------------- Merge percentiles across clients (from HDR .txt) ----------------
+echo "$SEPARATOR"
+echo "[*] Merging HDR histogram .txt files across all clients -> global percentiles..."
+
+LOG_DIR_ABS="$LOG_DIR"
+PROFILE_ENV="$PROFILE"
+
+python3 - <<'PY'
+import os, re, math, csv, glob
+from collections import defaultdict
+
+log_dir = os.environ.get("LOG_DIR_ABS") or os.environ.get("LOG_DIR") or "."
+profile = os.environ.get("PROFILE_ENV","").strip()
+
+# memtier's HDR .txt files are produced by --hdr-file-prefix. We look recursively in qps_* subfolders.
+pat = os.path.join(log_dir, "**", f"memtier_{profile}_qps_*_c*.txt") if profile else os.path.join(log_dir, "**", "memtier_*_qps_*_c*.txt")
+files = sorted(glob.glob(pat, recursive=True))
+
+if not files:
+    print(f"[!!] No HDR .txt files found under: {pat}")
+    print("     Check that memtier created histogram files (needs --hdr-file-prefix).")
+    raise SystemExit(0)
+
+def parse_hdr_txt(path):
+    """
+    Parse HdrHistogram 'text' percentile distribution format (GoogleCharts-compatible),
+    reconstruct per-bucket counts by differencing TotalCount.
+    Returns: dict[value]->count, total_count
+    """
+    s = open(path, "r", errors="ignore").read()
+    # normalize whitespace
+    toks = re.split(r"\s+", s.strip())
+    # find header start
+    # Expect: Value Percentile TotalCount 1/(1-Percentile)
+    try:
+        i0 = toks.index("Value")
+    except ValueError:
+        raise ValueError(f"Not an HDR text file? missing 'Value' header: {path}")
+    # move to first data row (skip 4 header tokens)
+    i = i0 + 4
+
+    counts = defaultdict(int)
+    prev_tc = 0
+
+    while i + 3 < len(toks):
+        t = toks[i]
+        if t.startswith("#[") or t.startswith("#") or t.startswith("Mean") or t.startswith("["):
+            break
+
+        # value, percentile, totalCount, 1/(1-p)  (the 4th can be 'inf')
+        v = float(toks[i])
+        # p = float(toks[i+1])  # not needed for merging
+        tc_raw = toks[i+2]
+
+        # Some implementations print tc as integer; be defensive
+        try:
+            tc = int(tc_raw)
+        except ValueError:
+            tc = int(float(tc_raw))
+
+        delta = tc - prev_tc
+        if delta < 0:
+            # shouldn't happen, but don't crash hard
+            delta = 0
+        counts[v] += delta
+        prev_tc = tc
+        i += 4
+
+    return counts, prev_tc
+
+def quantile_from_counts(counts_by_value, q):
+    items = sorted(counts_by_value.items(), key=lambda x: x[0])
+    total = sum(c for _, c in items)
+    if total == 0:
+        return float("nan")
+    target = int(math.ceil(q * total))
+    run = 0
+    for v, c in items:
+        run += c
+        if run >= target:
+            return v
+    return items[-1][0]
+
+# group by (qps, op)
+groups = defaultdict(list)
+qps_re = re.compile(r"_qps_(\d+)_", re.IGNORECASE)
+
+for f in files:
+    base = os.path.basename(f)
+    m = qps_re.search(base)
+    if not m:
+        continue
+    qps = int(m.group(1))
+    up = base.upper()
+    if "GET" in up:
+        op = "GET"
+    elif "SET" in up:
+        op = "SET"
+    else:
+        op = "ALL"
+    groups[(qps, op)].append(f)
+
+# quantiles to report
+quantiles = [
+    (0.50, "p50"),
+    (0.90, "p90"),
+    (0.95, "p95"),
+    (0.99, "p99"),
+    (0.999, "p99.9"),
+    (0.9999, "p99.99"),
+]
+
+out_csv = os.path.join(log_dir, f"merged_percentiles_{profile or 'ALL'}.csv")
+out_txt = os.path.join(log_dir, f"merged_percentiles_{profile or 'ALL'}.txt")
+
+rows = []
+for (qps, op), flist in sorted(groups.items(), key=lambda x: (x[0][0], x[0][1])):
+    merged = defaultdict(int)
+    total = 0
+    for f in flist:
+        c, t = parse_hdr_txt(f)
+        total += t
+        for v, cnt in c.items():
+            merged[v] += cnt
+
+    # If totals differ across files (they will), the merged total should equal sum of deltas,
+    # not sum of per-file totals. Use sum(merged) as authoritative:
+    merged_total = sum(merged.values())
+
+    rec = {"qps": qps, "op": op, "samples": merged_total, "files": len(flist)}
+    for q, name in quantiles:
+        rec[name] = quantile_from_counts(merged, q)
+    rows.append(rec)
+
+# write CSV
+with open(out_csv, "w", newline="") as fp:
+    w = csv.writer(fp)
+    header = ["qps", "op", "samples", "files"] + [name for _, name in quantiles]
+    w.writerow(header)
+    for r in rows:
+        w.writerow([r.get(h,"") for h in header])
+
+# write TXT
+with open(out_txt, "w") as fp:
+    fp.write(f"merged percentiles (profile={profile or 'ALL'}) from HDR .txt histograms\n")
+    fp.write("NOTE: values are in the same units memtier used in its histogram files.\n\n")
+    for r in rows:
+        fp.write(f"QPS={r['qps']}  OP={r['op']}  samples={r['samples']}  files={r['files']}\n")
+        fp.write("  " + "  ".join([f"{name}={r[name]}" for _, name in quantiles]) + "\n\n")
+
+print(f"[*] Wrote:\n    {out_csv}\n    {out_txt}")
+PY
+PYTHON_RC=$?
+
+# ---------------- Parse memtier logs for per-client actual QPS and percentiles ----------------
+echo "$SEPARATOR"
+echo "[*] Parsing memtier client logs into aggregated_memtier.csv ..."
+python3 parse_memtier_results.py "$LOG_DIR" || true
 
 echo "$SEPARATOR"
 echo "[*] Done. Logs in $LOG_DIR"
+exit $PYTHON_RC
