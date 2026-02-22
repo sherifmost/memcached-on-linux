@@ -73,7 +73,7 @@ case "$PROFILE" in
     ;;
 esac
 
-QPS_LIST=(300000)
+QPS_LIST=(100000 200000 300000)
 SYNC_DELAY=10
 POWER_STAT_DELAY=15
 DO_LOADONLY=true
@@ -268,16 +268,19 @@ fi
 echo "$SEPARATOR"
 echo "[*] Starting QPS loop..."
 for QPS in "${QPS_LIST[@]}"; do
-  QPS_DIR="$LOG_DIR/qps_${QPS}"
-  mkdir -p "$QPS_DIR"
-  SERVER_QDIR="logs_$DATE_TAG/qps_${QPS}"
   echo "$SEPARATOR"
   echo "[*] QPS: $QPS"
 
-  ssh_with_retry "$SERVER_ALIAS" "mkdir -p $SERVER_QDIR"
-  ssh_with_retry "$SERVER_ALIAS" "cd $SERVER_QDIR && nohup sudo powerstat -aRn -d $POWER_STAT_DELAY 1 50 > powerstat_rate_${QPS}.txt 2>&1 & echo \$! > powerstat_pid.txt"
-  echo "[*] Warm-up ${SYNC_DELAY}s..."
+  echo "$SEPARATOR"
+  echo "[*] Starting powerstat on server..."
+  ssh_with_retry "$SERVER_ALIAS" "nohup sudo powerstat -aRn -d $POWER_STAT_DELAY 1 50 > logs_$DATE_TAG/powerstat_rate_${QPS}.txt 2>&1 & echo \$! > powerstat_pid.txt"
+
+  echo "$SEPARATOR"
+  echo "[*] Sleeping for warm-up and sync (${SYNC_DELAY}s)..."
   sleep "$SYNC_DELAY"
+
+  echo "$SEPARATOR"
+  echo "[*] Starting memtier clients..."
 
   hosts=("$CLIENT1_ALIAS" "$CLIENT2_ALIAS" "$CLIENT3_ALIAS")
 
@@ -353,7 +356,7 @@ done
 # ---------------- Copy logs ----------------
 echo "$SEPARATOR"
 echo "[*] Copying logs..."
-scp_safe -r "$SERVER_ALIAS:logs_$DATE_TAG/qps_*" "$LOG_DIR/" || true
+scp_safe "$SERVER_ALIAS:logs_$DATE_TAG/powerstat_rate_*.txt" "$LOG_DIR/" || true
 scp_safe "$SERVER_ALIAS:logs_$DATE_TAG/redis_server.log" "$LOG_DIR/" || true
 scp_safe "$SERVER_ALIAS:logs_$DATE_TAG/redis.pid" "$LOG_DIR/" || true
 
@@ -518,7 +521,7 @@ PYTHON_RC=$?
 # ---------------- Parse memtier logs for per-client actual QPS and percentiles ----------------
 echo "$SEPARATOR"
 echo "[*] Parsing memtier client logs into aggregated_memtier.csv ..."
-python3 parse_memtier_results.py "$LOG_DIR" || true
+python3 parse_memtier_results.py "$LOG_DIR" --outdir "$(pwd)" || true
 
 echo "$SEPARATOR"
 echo "[*] Done. Logs in $LOG_DIR"
