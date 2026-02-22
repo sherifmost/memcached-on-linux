@@ -226,10 +226,11 @@ def main():
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
     run_tag = run_dir.name.replace('run_','')
     out_path = Path(args.out) if args.out else outdir / f'aggregated_memtier_{run_tag}.csv'
+    agg_rows_sorted = sorted(agg_rows, key=lambda r: float(r['Rate']))
     with open(out_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['Rate','QPS','Avg_Latency','P90_Latency','P99_Latency','Power','StdDev','Util','Misses'])
         writer.writeheader()
-        for r in agg_rows:
+        for r in agg_rows_sorted:
             writer.writerow(r)
     print(f"[+] wrote {len(agg_rows)} rows to {out_path}")
 
