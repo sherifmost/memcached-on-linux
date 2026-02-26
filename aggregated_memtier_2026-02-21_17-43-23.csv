@@ -1,0 +1,2 @@
+Rate,QPS,Avg_Latency,P90_Latency,P99_Latency,Power,StdDev,Util,Misses
+300000,301265.83999999997,4066.0034227980973,6620.0,9280.0,,,,

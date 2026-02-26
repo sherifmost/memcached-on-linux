@@ -3,6 +3,9 @@ experiment_logs_xl170/
 scan_logs_xl170/
 *_logs*/
 
+# External reference archive
+redis_overload-main/
+redis_overload-main.zip
+
 # Generated CSV aggregates
 # *.csv
-
